@@ -19,11 +19,12 @@ WORKDIR /build
 # layer, cutting incremental rebuild time from minutes to seconds.
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY proto/ proto/
-RUN mkdir -p src && \
+RUN mkdir -p src tests && \
     echo 'fn main() {}' > src/main.rs && \
     touch src/lib.rs && \
+    echo '' > tests/benchmark.rs && \
     cargo build --release && \
-    rm -rf src target/release/deps/nihostt-* target/release/nihostt*
+    rm -rf src tests target/release/deps/nihostt-* target/release/nihostt*
 
 # Now bring in the actual source and build the real binary.
 COPY src/ src/
