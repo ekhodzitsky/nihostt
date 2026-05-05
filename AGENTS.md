@@ -16,7 +16,7 @@ and exposes:
 - **WebSocket** (`/v1/ws`) — VAD-based streaming transcription with final results
 - **REST** (`/v1/transcribe`) — file upload, full JSON response
 - **SSE** (`/v1/transcribe/stream`) — file upload, streaming Server-Sent Events
-- **CLI** — `serve`, `download`, `transcribe` commands
+- **CLI** — `serve`, `download`, `transcribe`, `quantize` commands
 
 The model (~590 MB FP32, ~154 MB INT8) auto-downloads from HuggingFace on first
 run.
@@ -111,9 +111,10 @@ Downloaded to `~/.nihostt/models/` from `reazon-research/reazonspeech-k2-v2`:
 
 | File | Size (FP32) | Purpose |
 |---|---|---|
-| `encoder.onnx` | 565 MB | Zipformer encoder |
-| `decoder.onnx` | 12 MB | LSTM decoder |
-| `joiner.onnx` | 11 MB | RNN-T joiner |
+| `encoder-epoch-99-avg-1.onnx` | 565 MB | Zipformer encoder (active) |
+| `encoder-epoch-99-avg-1.fp32.onnx` | 565 MB | Original FP32 backup after quantization |
+| `decoder-epoch-99-avg-1.onnx` | 12 MB | LSTM decoder |
+| `joiner-epoch-99-avg-1.onnx` | 11 MB | RNN-T joiner |
 | `tokens.txt` | small | Character vocabulary |
 | `silero_vad.onnx` | ~1 MB | Voice activity detection |
 
@@ -167,3 +168,12 @@ RUST_LOG=nihostt=debug cargo run -- serve
   names, update the cache key in CI workflows.
 - The project uses English for all code comments, documentation, and commit
   messages.
+
+## Environment Variables
+
+| Env var | CLI flag | Default |
+|---|---|---|
+| `NIHOSTT_SKIP_QUANTIZE` | `--skip-quantize` | false |
+
+`--skip-quantize` skips the automatic INT8 download / quantization step in
+`serve` and `download`. The `quantize` subcommand always performs the step.

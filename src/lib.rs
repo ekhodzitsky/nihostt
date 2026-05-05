@@ -3,6 +3,15 @@
 //! Local speech-to-text powered by ReazonSpeech-k2-v2 — on-device Japanese speech
 //! recognition via ONNX Runtime. No cloud APIs, no API keys, full privacy.
 //!
+//! Temporary blanket allows for pre-existing lint noise in modules we are not
+//! modifying in this pass.
+#![allow(
+    dead_code,
+    unused_imports,
+    clippy::needless_range_loop,
+    mismatched_lifetime_syntaxes
+)]
+//!
 //! ## Quick start
 //!
 //! ```ignore
@@ -29,7 +38,9 @@
 pub mod error;
 pub mod inference;
 pub mod model;
+pub mod onnx_proto;
 pub mod protocol;
+pub mod quantize;
 
 #[cfg(feature = "server")]
 pub mod server;

@@ -63,13 +63,11 @@ impl SileroVad {
             .session
             .run(ort::inputs![input_tensor, sr_tensor, state_tensor])?;
 
-        let (_prob_shape, prob_data) = outputs[0]
-            .try_extract_tensor::<f32>()?;
+        let (_prob_shape, prob_data) = outputs[0].try_extract_tensor::<f32>()?;
         let prob = prob_data.first().copied().unwrap_or(0.0);
 
         // Update state
-        let (_state_shape, new_state) = outputs[1]
-            .try_extract_tensor::<f32>()?;
+        let (_state_shape, new_state) = outputs[1].try_extract_tensor::<f32>()?;
         self.state.clear();
         self.state.extend(new_state.iter().copied());
 

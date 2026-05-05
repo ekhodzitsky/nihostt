@@ -1,8 +1,10 @@
 use crate::error::NihosttError;
 use anyhow::Context;
-use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
+use rubato::{
+    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+};
 use symphonia::core::audio::{AudioBufferRef, SampleBuffer};
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
@@ -32,11 +34,7 @@ pub fn load_audio(path: &str) -> anyhow::Result<(Vec<f32>, u32)> {
         .codec_params
         .sample_rate
         .ok_or_else(|| NihosttError::audio_decode("unknown sample rate"))?;
-    let n_channels = track
-        .codec_params
-        .channels
-        .map(|c| c.count())
-        .unwrap_or(1);
+    let n_channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(1);
 
     let dec_opts: DecoderOptions = Default::default();
     let mut decoder = symphonia::default::get_codecs()

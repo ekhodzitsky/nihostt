@@ -5,7 +5,7 @@ use std::sync::Arc;
 pub mod http;
 pub mod rate_limit;
 
-pub use http::run_with_config;
+pub use http::{run_on_random_port, run_with_config};
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {

@@ -2,6 +2,8 @@ use clap::{Parser, Subcommand};
 use nihostt::server::{OriginPolicy, RuntimeLimits, ServerConfig};
 use nihostt::{inference, model, server};
 use std::net::IpAddr;
+use std::path::Path;
+use tokio::io::AsyncWriteExt;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -87,6 +89,10 @@ enum Commands {
         /// Trust `X-Forwarded-For` and `X-Real-IP` headers for rate-limit IP extraction.
         #[arg(long, env = "NIHOSTT_TRUST_PROXY", default_value_t = false)]
         trust_proxy: bool,
+
+        /// Skip automatic INT8 quantization step after download.
+        #[arg(long, env = "NIHOSTT_SKIP_QUANTIZE", default_value_t = false)]
+        skip_quantize: bool,
     },
 
     /// Download model without starting server
@@ -94,6 +100,21 @@ enum Commands {
         /// Model directory
         #[arg(long, default_value_t = model::default_model_dir())]
         model_dir: String,
+
+        /// Skip automatic INT8 quantization step after download.
+        #[arg(long, env = "NIHOSTT_SKIP_QUANTIZE", default_value_t = false)]
+        skip_quantize: bool,
+    },
+
+    /// Quantize encoder model to INT8 (or download pre-quantized version)
+    Quantize {
+        /// Model directory
+        #[arg(long, default_value_t = model::default_model_dir())]
+        model_dir: String,
+
+        /// Force re-quantization even if INT8 model is already active
+        #[arg(long)]
+        force: bool,
     },
 
     /// Transcribe an audio file (offline)
@@ -163,6 +184,83 @@ fn is_loopback_host(host: &str) -> bool {
     false
 }
 
+fn encoder_path(model_dir: &str) -> std::path::PathBuf {
+    Path::new(model_dir).join("encoder-epoch-99-avg-1.onnx")
+}
+
+/// Heuristic: INT8 encoder is ~154 MB, FP32 is ~590 MB.
+fn is_int8_encoder(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(meta) => meta.len() < 300 * 1024 * 1024,
+        Err(_) => false,
+    }
+}
+
+/// Ensure the active encoder is INT8, downloading it from HuggingFace if available
+/// or falling back to native quantization of the FP32 encoder.
+async fn ensure_int8_encoder(model_dir: &str, skip: bool, force: bool) -> anyhow::Result<()> {
+    let fp32_path = encoder_path(model_dir);
+    if skip {
+        tracing::info!(
+            "Skipping INT8 quantization (--skip-quantize). Engine will load the FP32 encoder."
+        );
+        return Ok(());
+    }
+    if fp32_path.exists() && is_int8_encoder(&fp32_path) && !force {
+        tracing::debug!("INT8 encoder already active");
+        return Ok(());
+    }
+
+    // Attempt to download pre-quantized INT8 encoder from HF.
+    let int8_url = "https://huggingface.co/reazon-research/reazonspeech-k2-v2/resolve/main/encoder-epoch-99-avg-1.int8.onnx";
+    let client = reqwest::Client::new();
+    let int8_temp = fp32_path.with_extension("int8.partial");
+    tracing::info!("Attempting to download INT8 encoder from HuggingFace…");
+    match client.get(int8_url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            let mut file = tokio::fs::File::create(&int8_temp).await?;
+            let mut resp = resp;
+            while let Some(chunk) = resp.chunk().await? {
+                file.write_all(&chunk).await?;
+            }
+            file.flush().await?;
+            drop(file);
+            if fp32_path.exists() {
+                let backup = fp32_path.with_extension("fp32.onnx");
+                tokio::fs::rename(&fp32_path, &backup).await?;
+            }
+            tokio::fs::rename(&int8_temp, &fp32_path).await?;
+            tracing::info!("INT8 encoder downloaded and activated");
+            return Ok(());
+        }
+        Ok(resp) => {
+            tracing::warn!(
+                "INT8 encoder not available on HF (status {}). Falling back to native quantization…",
+                resp.status()
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to reach HF for INT8 encoder ({}). Falling back to native quantization…",
+                e
+            );
+        }
+    }
+
+    // Fallback: quantize the local FP32 encoder.
+    if !fp32_path.exists() {
+        anyhow::bail!("FP32 encoder not found at {}", fp32_path.display());
+    }
+    let int8_path = fp32_path.with_extension("int8.onnx");
+    tracing::info!("Quantizing FP32 encoder to INT8 (~2 min, one-time)…");
+    nihostt::quantize::quantize_model(&fp32_path, &int8_path)?;
+    let backup = fp32_path.with_extension("fp32.onnx");
+    tokio::fs::rename(&fp32_path, &backup).await?;
+    tokio::fs::rename(&int8_path, &fp32_path).await?;
+    tracing::info!("INT8 encoder saved and activated");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -190,9 +288,11 @@ async fn main() -> anyhow::Result<()> {
             max_session_secs,
             shutdown_drain_secs,
             trust_proxy,
+            skip_quantize,
         } => {
             ensure_bind_allowed(&host, bind_all)?;
             model::ensure_model(&model_dir).await?;
+            ensure_int8_encoder(&model_dir, skip_quantize, false).await?;
             let engine = inference::Engine::load_with_pool_size(&model_dir, pool_size)?;
             log_rss();
             let config = ServerConfig {
@@ -216,16 +316,24 @@ async fn main() -> anyhow::Result<()> {
             };
             server::run_with_config(engine, config, None).await?;
         }
-        Commands::Download { model_dir } => {
+        Commands::Download {
+            model_dir,
+            skip_quantize,
+        } => {
             model::ensure_model(&model_dir).await?;
+            ensure_int8_encoder(&model_dir, skip_quantize, false).await?;
             tracing::info!("Model ready at {model_dir}");
+        }
+        Commands::Quantize { model_dir, force } => {
+            model::ensure_model(&model_dir).await?;
+            ensure_int8_encoder(&model_dir, false, force).await?;
         }
         Commands::Transcribe { file, model_dir } => {
             model::ensure_model(&model_dir).await?;
             let engine = inference::Engine::load_with_pool_size(&model_dir, 1)?;
             log_rss();
             let mut guard = engine.pool.checkout().await?;
-            let result = engine.transcribe_file(&file, &mut guard);
+            let result = engine.transcribe_file(&file, guard.session());
             drop(guard);
             println!("{}", result?.text);
         }
@@ -268,7 +376,10 @@ mod tests {
                 std::env::set_var("NIHOSTT_ALLOW_BIND_ANY", v);
             }
         }
-        assert!(result.is_err(), "0.0.0.0 without --bind-all must be rejected");
+        assert!(
+            result.is_err(),
+            "0.0.0.0 without --bind-all must be rejected"
+        );
     }
 
     #[test]

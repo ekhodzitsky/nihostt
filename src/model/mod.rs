@@ -12,13 +12,19 @@ const MODEL_FILES: &[(&str, &str)] = &[
     ("tokens.txt", "sha256-placeholder"),
 ];
 
-const VAD_URL: &str = "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx";
+const VAD_URL: &str =
+    "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx";
 const VAD_FILENAME: &str = "silero_vad.onnx";
 
 /// Default model directory: `~/.nihostt/models`
 pub fn default_model_dir() -> String {
     dirs::home_dir()
-        .map(|p| p.join(".nihostt").join("models").to_string_lossy().into_owned())
+        .map(|p| {
+            p.join(".nihostt")
+                .join("models")
+                .to_string_lossy()
+                .into_owned()
+        })
         .unwrap_or_else(|| "./models".to_string())
 }
 
@@ -76,9 +82,13 @@ async fn download_with_progress(
             .with_context(|| format!("failed to write to {}", partial.display()))?;
     }
 
-    tokio::fs::rename(&partial, dest)
-        .await
-        .with_context(|| format!("failed to rename {} to {}", partial.display(), dest.display()))?;
+    tokio::fs::rename(&partial, dest).await.with_context(|| {
+        format!(
+            "failed to rename {} to {}",
+            partial.display(),
+            dest.display()
+        )
+    })?;
 
     tracing::info!(path = %dest.display(), "download complete");
     Ok(())

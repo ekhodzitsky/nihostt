@@ -13,17 +13,11 @@ pub enum ServerMessage {
         language: String,
     },
     #[serde(rename = "partial")]
-    Partial {
-        text: String,
-    },
+    Partial { text: String },
     #[serde(rename = "final")]
-    Final {
-        text: String,
-    },
+    Final { text: String },
     #[serde(rename = "error")]
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 /// WebSocket messages sent from client to server.
@@ -31,13 +25,9 @@ pub enum ServerMessage {
 #[serde(tag = "type")]
 pub enum ClientMessage {
     #[serde(rename = "configure")]
-    Configure {
-        sample_rate: Option<u32>,
-    },
+    Configure { sample_rate: Option<u32> },
     #[serde(rename = "audio")]
-    Audio {
-        data: Vec<u8>,
-    },
+    Audio { data: Vec<u8> },
     #[serde(rename = "stop")]
     Stop,
 }

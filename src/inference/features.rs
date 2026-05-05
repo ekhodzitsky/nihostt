@@ -1,6 +1,6 @@
 use crate::inference::{HOP_LENGTH, N_FFT, N_MELS};
 use anyhow::Context;
-use rustfft::{num_complex::Complex, FftPlanner};
+use rustfft::{FftPlanner, num_complex::Complex};
 
 /// Compute 80-bin log-mel spectrogram for 16kHz audio.
 pub fn compute_mel(samples: &[f32], sample_rate: u32) -> anyhow::Result<Vec<Vec<f32>>> {
@@ -27,11 +27,7 @@ pub fn compute_mel(samples: &[f32], sample_rate: u32) -> anyhow::Result<Vec<Vec<
     Ok(mel_spec)
 }
 
-fn compute_stft(
-    samples: &[f32],
-    n_fft: usize,
-    hop_length: usize,
-) -> anyhow::Result<Vec<Vec<f32>>> {
+fn compute_stft(samples: &[f32], n_fft: usize, hop_length: usize) -> anyhow::Result<Vec<Vec<f32>>> {
     let mut planner = FftPlanner::new();
     let fft = planner.plan_fft_forward(n_fft);
 
@@ -45,7 +41,8 @@ fn compute_stft(
 
         // Apply Hann window
         for (i, s) in samples[start..start + n_fft].iter().enumerate() {
-            let window = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (n_fft as f32 - 1.0)).cos();
+            let window =
+                0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (n_fft as f32 - 1.0)).cos();
             buffer[i] = Complex::new(s * window, 0.0);
         }
         for i in samples[start..start + n_fft].len()..n_fft {
@@ -91,7 +88,8 @@ fn mel_filterbank(n_mels: usize, n_fft: usize, sample_rate: u32) -> Vec<Vec<f32>
             if kf >= bin_points[m] && kf < bin_points[m + 1] {
                 filterbank[m][k] = (kf - bin_points[m]) / (bin_points[m + 1] - bin_points[m]);
             } else if kf >= bin_points[m + 1] && kf < bin_points[m + 2] {
-                filterbank[m][k] = (bin_points[m + 2] - kf) / (bin_points[m + 2] - bin_points[m + 1]);
+                filterbank[m][k] =
+                    (bin_points[m + 2] - kf) / (bin_points[m + 2] - bin_points[m + 1]);
             }
         }
     }

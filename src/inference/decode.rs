@@ -25,12 +25,12 @@ pub fn greedy_decode(
         }
     }
 
-    let encoder_tensor = TensorRef::from_array_view(([1_usize, n_frames, n_mels], encoder_input.as_slice()))?;
+    let encoder_tensor =
+        TensorRef::from_array_view(([1_usize, n_frames, n_mels], encoder_input.as_slice()))?;
 
     // Run encoder
     let encoder_outputs = session.encoder.run(ort::inputs![encoder_tensor])?;
-    let (_enc_shape, enc_data) = encoder_outputs[0]
-        .try_extract_tensor::<f32>()?;
+    let (_enc_shape, enc_data) = encoder_outputs[0].try_extract_tensor::<f32>()?;
 
     // Copy shape and data so we can release the borrow
     let enc_shape_owned: Vec<i64> = _enc_shape.iter().copied().collect();
@@ -58,8 +58,7 @@ pub fn greedy_decode(
         let target_tensor = TensorRef::from_array_view(([1_usize, 1], target_data.as_slice()))?;
 
         let decoder_outputs = session.decoder.run(ort::inputs![target_tensor])?;
-        let (_dec_shape, dec_data) = decoder_outputs[0]
-            .try_extract_tensor::<f32>()?;
+        let (_dec_shape, dec_data) = decoder_outputs[0].try_extract_tensor::<f32>()?;
 
         let dec_shape_owned: Vec<i64> = _dec_shape.iter().copied().collect();
         dec_data_buf.clear();
@@ -79,8 +78,7 @@ pub fn greedy_decode(
         let dec_tensor = TensorRef::from_array_view(([1_usize, dec_frame.len(), 1], dec_frame))?;
 
         let joiner_outputs = session.joiner.run(ort::inputs![enc_tensor, dec_tensor])?;
-        let (_logits_shape, logits_data) = joiner_outputs[0]
-            .try_extract_tensor::<f32>()?;
+        let (_logits_shape, logits_data) = joiner_outputs[0].try_extract_tensor::<f32>()?;
 
         let logits_shape_owned: Vec<i64> = _logits_shape.iter().copied().collect();
         logits_buf.clear();
