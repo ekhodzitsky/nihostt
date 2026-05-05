@@ -32,7 +32,8 @@ COPY src/ src/
 
 # ort's download-binaries feature fetches CUDA-enabled ONNX Runtime.
 # copy-dylibs copies libonnxruntime*.so to target/release/.
-RUN cargo build --release --features cuda && \
+RUN mkdir -p tests && echo '' > tests/benchmark.rs && \
+    cargo build --release --features cuda && \
     strip target/release/nihostt
 
 # --- Model bake stage (runs only when NIHOSTT_BAKE_MODEL=1) ---

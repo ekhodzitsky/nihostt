@@ -29,7 +29,8 @@ RUN mkdir -p src tests && \
 # Now bring in the actual source and build the real binary.
 COPY src/ src/
 
-RUN cargo build --release && \
+RUN mkdir -p tests && echo '' > tests/benchmark.rs && \
+    cargo build --release && \
     strip target/release/nihostt
 
 # --- Model bake stage (runs only when NIHOSTT_BAKE_MODEL=1) ---
