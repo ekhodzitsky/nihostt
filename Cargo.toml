@@ -1,6 +1,6 @@
 [package]
 name = "nihostt"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Local Japanese speech-to-text server — on-device, real-time, privacy-first. Powered by ReazonSpeech-k2-v2 via ONNX Runtime."
 license = "MIT"
