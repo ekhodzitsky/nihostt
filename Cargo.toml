@@ -1,0 +1,97 @@
+[package]
+name = "nihostt"
+version = "0.1.0"
+edition = "2024"
+description = "Local STT server powered by ReazonSpeech-k2-v2 — on-device Japanese speech recognition via ONNX Runtime"
+license = "MIT"
+repository = "https://github.com/ekhodzitsky/nihostt"
+keywords = ["stt", "speech-recognition", "reazonspeech", "onnx", "japanese"]
+categories = ["multimedia::audio", "command-line-utilities"]
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = ["server"]
+server = ["dep:axum", "dep:tokio-stream", "dep:tokio-util"]
+coreml = ["ort/coreml"]
+cuda = ["ort/cuda"]
+
+[dependencies]
+# ONNX Runtime
+ort = "2.0.0-rc.12"
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "signal", "macros", "fs"] }
+
+# HTTP + WebSocket server (single port via axum)
+axum = { version = "0.8", features = ["ws", "multipart"], optional = true }
+futures-util = "0.3"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# HTTP client for model download
+reqwest = { version = "0.13", features = ["stream"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Cryptographic hashing for model verification
+sha2 = "0.11"
+hex = "0.4"
+
+# FFT for mel spectrogram
+rustfft = "6"
+
+# N-dimensional arrays for ONNX tensor manipulation
+ndarray = "0.16"
+
+# High-quality audio resampling
+rubato = "0.16"
+
+# Async stream adapters (ReceiverStream for SSE)
+tokio-stream = { version = "0.1", optional = true }
+
+# Cancellation + task tracking for graceful WS/SSE drain on shutdown
+tokio-util = { version = "0.7", features = ["rt"], optional = true }
+
+# Audio file reading (for `transcribe` command)
+symphonia = { version = "0.5", features = ["aac", "isomp4", "mp3", "ogg", "flac", "pcm", "wav"] }
+
+# Explicit pin for zero-copy byte buffers shared with symphonia
+bytes = "1"
+
+# Per-IP rate limiting (token bucket, optional — off by default)
+dashmap = "6"
+
+# Home directory detection for default model path
+dirs = "5"
+
+# ONNX protobuf types for quantization pipeline
+prost = "0.14"
+
+[build-dependencies]
+prost-build = "0.14"
+
+[[bin]]
+name = "nihostt"
+required-features = ["server"]
+
+[dev-dependencies]
+tempfile = "3"
+tokio-tungstenite = "0.29"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
