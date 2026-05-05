@@ -3,7 +3,7 @@
 # Run:   docker run -p 9876:9876 nihostt
 
 # --- Builder stage ---
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.93-bookworm AS builder
 
 # `prost-build` (via build.rs) requires `protoc` at compile time; without it
 # the build aborts with "prost-build failed to compile proto/onnx.proto".
