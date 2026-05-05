@@ -29,11 +29,6 @@ jobs:
             target: aarch64-apple-darwin
             features: coreml
             asset_suffix: aarch64-apple-darwin
-          - name: macos-x86_64
-            os: macos-latest
-            target: x86_64-apple-darwin
-            features: ""
-            asset_suffix: x86_64-apple-darwin
           - name: linux-x86_64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
