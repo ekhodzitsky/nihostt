@@ -1,34 +1,199 @@
 # nihostt
 
-Local speech-to-text server powered by ReazonSpeech-k2-v2 — on-device Japanese
-speech recognition via ONNX Runtime. No cloud APIs, no API keys, full privacy.
+[![CI](https://github.com/ekhodzitsky/nihostt/actions/workflows/ci.yml/badge.svg)](https://github.com/ekhodzitsky/nihostt/actions/workflows/ci.yml)
+<!-- [![crates.io](https://img.shields.io/crates/v/nihostt.svg)](https://crates.io/crates/nihostt) -->
+<!-- Uncomment after first crates.io publish -->
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+> **Local Japanese speech-to-text server.** On-device, real-time, privacy-first — powered by ReazonSpeech-k2-v2 via ONNX Runtime. No cloud APIs, no API keys, no data leaves your machine.
+
+```bash
+# Install from source & run
+git clone https://github.com/ekhodzitsky/nihostt.git
+cd nihostt
+cargo build --release
+./target/release/nihostt download && ./target/release/nihostt serve
+```
+
+## Why nihostt?
+
+| | nihostt | Google Cloud Speech | Azure Speech | Amazon Transcribe |
+|---|---|---|---|---|
+| **Privacy** | ✅ 100% on-device | ❌ Cloud upload | ❌ Cloud upload | ❌ Cloud upload |
+| **Offline** | ✅ Works without internet | ❌ No | ❌ No | ❌ No |
+| **Latency** | ✅ ~200ms (local) | ~500–2000ms | ~500–2000ms | ~1000–3000ms |
+| **Cost** | ✅ Free forever | $0.024/min | $1.0/hour | $0.024/min |
+| **Japanese CER** | **2.04%** | ~5–8% | ~4–7% | ~5–9% |
+
+*Benchmark: 9 native-speaker clips from Tatoeba, character error rate. See [`tests/benchmark.rs`](tests/benchmark.rs).*
 
 ## Features
 
-- **WebSocket** (`/v1/ws`) — VAD-based streaming transcription
-- **REST** (`/v1/transcribe`) — file upload transcription
-- **SSE** (`/v1/transcribe/stream`) — streaming Server-Sent Events
-- **CLI** — `serve`, `download`, `transcribe` commands
-- **ONNX Runtime** — runs on CPU, CoreML (Apple Silicon), or CUDA (NVIDIA)
+- 🎙️ **Streaming recognition** — WebSocket with live partial/final transcripts
+- 📁 **File upload** — REST endpoint for batch transcription (WAV, MP3, M4A, FLAC, OGG)
+- 📡 **SSE streaming** — Server-Sent Events for progressive file transcription
+- 🧠 **SOTA accuracy** — ReazonSpeech-k2-v2 (Zipformer RNN-T, 159M params)
+- ⚡ **INT8 quantization** — ~155 MB model, ~350 MB RAM on mobile
+- 🔒 **Privacy by default** — loopback-only bind, no telemetry
+- 📱 **Android FFI** — build `libnihostt.so` for on-device mobile STT
+- 🗣️ **Speaker diarization** — optional feature-gated speaker ID tracking
 
 ## Quick Start
 
 ```bash
-# Download model (~590 MB, one-time)
-cargo run --release -- download
+# 1. Install from source
+git clone https://github.com/ekhodzitsky/nihostt.git
+cd nihostt
+cargo build --release
 
-# Start server
-cargo run --release -- serve
+# 2. Download model (~155 MB INT8, one-time)
+./target/release/nihostt download
 
-# Transcribe a file
-cargo run --release -- transcribe recording.wav
+# 3. Start server
+./target/release/nihostt serve
+
+# 4. Transcribe a file
+./target/release/nihostt transcribe recording.wav
 ```
+
+### WebSocket streaming example
+
+```javascript
+const ws = new WebSocket('ws://127.0.0.1:9876/v1/ws');
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  if (msg.type === 'partial') console.log('partial:', msg.text);
+  if (msg.type === 'final')   console.log('final:  ', msg.text);
+};
+
+ws.onopen = () => {
+  // Send raw PCM16 @ 16kHz
+  navigator.mediaDevices.getUserMedia({ audio: true })
+    .then(stream => {
+      const recorder = new MediaRecorder(stream);
+      recorder.ondataavailable = e => {
+        e.data.arrayBuffer().then(buf => ws.send(buf));
+      };
+      recorder.start(500);
+    });
+};
+```
+
+See [`examples/`](examples/) for Python, Kotlin, Go, Bun, and JavaScript clients.
+
+## Architecture
+
+```
+┌─────────────┐     WebSocket     ┌─────────────────────────────┐
+│   Browser   │◄─────────────────►│  axum server (Rust)         │
+│   / Mobile  │     REST/SSE      │  ├── VAD (Silero)            │
+└─────────────┘                   │  ├── Session pool (4× ONNX)  │
+                                  │  └── Streaming pipeline      │
+                                  └─────────────────────────────┘
+                                           │
+                                           ▼
+                                  ┌─────────────────────────────┐
+                                  │  ONNX Runtime               │
+                                  │  ├── Encoder (INT8, ~155MB) │
+                                  │  ├── Decoder (~4MB)         │
+                                  │  └── Joiner (~2.6MB)        │
+                                  └─────────────────────────────┘
+```
+
+## Benchmarks
+
+Run locally on Apple M1 Pro:
+
+```bash
+cargo test --test benchmark -- --ignored
+```
+
+| Dataset | Type | CER | Notes |
+|---|---|---|---|
+| Tatoeba JA (9 clips) | Real native speech | **2.04%** | See [`tests/fixtures/tatoeba/`](tests/fixtures/tatoeba/) |
+| Synthetic TTS | `say -v Kyoko` | 24.19% | Higher due to acoustic mismatch |
+
+## Installation
+
+### macOS (Homebrew)
+
+> Available after the first release. Formula is ready in [`Formula/nihostt.rb`](Formula/nihostt.rb).
+
+```bash
+brew tap ekhodzitsky/nihostt
+brew install nihostt
+```
+
+### From source
+
+```bash
+git clone https://github.com/ekhodzitsky/nihostt.git
+cd nihostt
+cargo build --release
+./target/release/nihostt serve
+```
+
+### Docker
+
+```bash
+# CPU (any platform)
+docker build -t nihostt .
+docker run -p 9876:9876 nihostt
+
+# CUDA (Linux, requires NVIDIA Container Toolkit)
+docker build -f Dockerfile.cuda -t nihostt-cuda .
+docker run --gpus all -p 9876:9876 nihostt-cuda
+
+# Baked image (model included at build time, ~350 MB)
+docker build --build-arg NIHOSTT_BAKE_MODEL=1 -t nihostt:baked .
+```
+
+## API
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/health` | Health check |
+| `POST` | `/v1/transcribe` | Upload audio file, get JSON transcript |
+| `POST` | `/v1/transcribe/stream` | Upload audio file, get SSE stream |
+| `WS` | `/v1/ws` | Real-time streaming with partial/final |
+
+See [`docs/openapi.yaml`](docs/openapi.yaml) for REST/SSE spec and [`docs/asyncapi.yaml`](docs/asyncapi.yaml) for WebSocket protocol. Full CLI reference is in [`docs/cli.md`](docs/cli.md).
+
+## Android / Mobile
+
+Build `libnihostt.so` for Android:
+
+```bash
+cargo ndk -t arm64-v8a -o ./android/app/src/main/jniLibs \
+  build --release --features ffi
+```
+
+See [`ANDROID.md`](ANDROID.md) for full integration guide.
 
 ## Model
 
-ReazonSpeech-k2-v2 (159M params, Zipformer RNN-T) — SOTA Japanese ASR on
-JSUT-BASIC5000, Common Voice, and TEDxJP-10K benchmarks.
+| File | Size | Description |
+|---|---|---|
+| `encoder-epoch-99-avg-1.onnx` | ~155 MB (INT8) | Quantized Zipformer encoder |
+| `decoder-epoch-99-avg-1.onnx` | ~4.4 MB | LSTM decoder |
+| `joiner-epoch-99-avg-1.onnx` | ~2.6 MB | RNN-T joiner |
+| `tokens.txt` | ~46 KB | BPE vocabulary (5224 tokens) |
+
+Auto-downloaded from [HuggingFace](https://huggingface.co/reazon-research/reazonspeech-k2-v2) on first run.
+
+## Contributing
+
+We welcome contributions! See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+```bash
+cargo test && cargo clippy && cargo deny check
+```
 
 ## License
 
-MIT
+MIT — see [`LICENSE`](LICENSE).
+
+---
+
+⭐ **Star this repo if you find it useful!** It helps others discover privacy-first Japanese STT.

@@ -31,6 +31,33 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --features coreml
       - run: cargo check --features cuda
+      - run: cargo check --features diarization
+      - run: cargo check --features ffi
+
+  e2e:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache model
+        id: cache-model
+        uses: actions/cache@v4
+        with:
+          path: ~/.nihostt/models
+          key: nihostt-model-${{ hashFiles('src/model/mod.rs') }}
+
+      - name: Download model
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        run: cargo run -- download
+
+      - name: Run e2e tests
+        run: cargo test --test e2e_rest --test e2e_ws --test e2e_errors --test e2e_shutdown --test e2e_rate_limit -- --ignored --test-threads=1
+        timeout-minutes: 30
 
   audit:
     runs-on: ubuntu-latest
@@ -42,3 +69,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-audit
       - run: cargo audit
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v1
+        with:
+          command: check

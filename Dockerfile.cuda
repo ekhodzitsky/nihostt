@@ -1,0 +1,85 @@
+# Multi-stage build for nihostt with CUDA support
+# Build: docker build -f Dockerfile.cuda -t nihostt-cuda .
+# Run:   docker run --gpus all -p 9876:9876 nihostt-cuda
+#
+# CUDA binary falls back to CPU if no GPU is available at runtime.
+
+# --- Builder stage ---
+FROM nvidia/cuda:12.6.3-devel-ubuntu22.04 AS builder
+
+# `protobuf-compiler` feeds prost-build (build.rs); everything else is the
+# baseline toolchain needed to compile the crate + its C deps.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl build-essential pkg-config protobuf-compiler && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.82.0 && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /build
+
+# Dependency-compilation cache (see Dockerfile for rationale).
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY proto/ proto/
+RUN mkdir -p src && \
+    echo 'fn main() {}' > src/main.rs && \
+    touch src/lib.rs && \
+    cargo build --release --features cuda && \
+    rm -rf src target/release/deps/nihostt-* target/release/nihostt*
+
+COPY src/ src/
+
+# ort's download-binaries feature fetches CUDA-enabled ONNX Runtime.
+# copy-dylibs copies libonnxruntime*.so to target/release/.
+RUN cargo build --release --features cuda && \
+    strip target/release/nihostt
+
+# --- Model bake stage (runs only when NIHOSTT_BAKE_MODEL=1) ---
+FROM debian:bookworm-slim AS model-fetcher
+
+ARG NIHOSTT_BAKE_MODEL=0
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/nihostt /usr/local/bin/nihostt
+
+RUN mkdir -p /models && \
+    if [ "$NIHOSTT_BAKE_MODEL" = "1" ]; then \
+        nihostt download --model-dir /models; \
+    fi
+
+# --- Runtime stage ---
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
+
+ARG NIHOSTT_BAKE_MODEL=0
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy binary AND ort's dynamic libraries (.so files copied by copy-dylibs)
+COPY --from=builder /build/target/release/nihostt /usr/local/bin/nihostt
+COPY --from=builder /build/target/release/libonnxruntime*.so* /usr/local/lib/
+RUN ldconfig
+
+RUN groupadd -r nihostt && useradd -r -g nihostt nihostt && \
+    mkdir -p /home/nihostt/.nihostt/models && chown -R nihostt:nihostt /home/nihostt
+
+# Copy baked model files (only present when NIHOSTT_BAKE_MODEL=1)
+COPY --from=model-fetcher --chown=nihostt:nihostt /models/. /home/nihostt/.nihostt/models/
+
+USER nihostt
+
+ENV RUST_LOG=nihostt=info
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"
+
+EXPOSE 9876
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:9876/health || exit 1
+
+ENTRYPOINT ["nihostt"]
+CMD ["serve", "--port", "9876", "--host", "0.0.0.0", "--bind-all"]

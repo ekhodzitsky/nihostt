@@ -6,9 +6,9 @@ const HF_REPO: &str = "reazon-research/reazonspeech-k2-v2";
 const HF_REVISION: &str = "main";
 
 const MODEL_FILES: &[(&str, &str)] = &[
-    ("encoder.onnx", "sha256-placeholder"),
-    ("decoder.onnx", "sha256-placeholder"),
-    ("joiner.onnx", "sha256-placeholder"),
+    ("encoder-epoch-99-avg-1.onnx", "sha256-placeholder"),
+    ("decoder-epoch-99-avg-1.onnx", "sha256-placeholder"),
+    ("joiner-epoch-99-avg-1.onnx", "sha256-placeholder"),
     ("tokens.txt", "sha256-placeholder"),
 ];
 

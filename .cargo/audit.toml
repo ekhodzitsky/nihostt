@@ -1,0 +1,3 @@
+[advisories]
+# (no ignores at this time — add entries here when cargo audit flags
+# known false positives or RUSTSEC advisories that do not affect nihostt.)

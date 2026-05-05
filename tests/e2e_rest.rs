@@ -9,7 +9,12 @@ use std::time::Duration;
 
 /// Build a simple multipart/form-data body manually so we don't depend on
 /// reqwest's `multipart` feature.
-fn multipart_body(field_name: &str, file_name: &str, mime: &str, data: Vec<u8>) -> (Vec<u8>, String) {
+fn multipart_body(
+    field_name: &str,
+    file_name: &str,
+    mime: &str,
+    data: Vec<u8>,
+) -> (Vec<u8>, String) {
     let boundary = "----nihostt-test-boundary";
     let mut body = Vec::new();
     body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());

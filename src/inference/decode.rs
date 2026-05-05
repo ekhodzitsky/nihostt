@@ -27,9 +27,13 @@ pub fn greedy_decode(
 
     let encoder_tensor =
         TensorRef::from_array_view(([1_usize, n_frames, n_mels], encoder_input.as_slice()))?;
+    let x_lens = [n_frames as i64];
+    let x_lens_tensor = TensorRef::from_array_view(([1_usize], x_lens.as_slice()))?;
 
     // Run encoder
-    let encoder_outputs = session.encoder.run(ort::inputs![encoder_tensor])?;
+    let encoder_outputs = session
+        .encoder
+        .run(ort::inputs![encoder_tensor, x_lens_tensor])?;
     let (_enc_shape, enc_data) = encoder_outputs[0].try_extract_tensor::<f32>()?;
 
     // Copy shape and data so we can release the borrow
@@ -42,8 +46,9 @@ pub fn greedy_decode(
     let enc_dim = enc_shape_owned[2] as usize;
 
     // Decoder initial state: prev_token = blank (usually last token index or 0)
-    let blank_id = tokens.len().saturating_sub(1);
+    let blank_id = 0;
     let mut prev_token = blank_id as i64;
+    let mut prev_prev_token = blank_id as i64;
     let mut result_tokens: Vec<usize> = Vec::new();
 
     let mut dec_data_buf: Vec<f32> = Vec::new();
@@ -53,9 +58,9 @@ pub fn greedy_decode(
         let enc_offset = t * enc_dim;
         let enc_frame = &enc_data_owned[enc_offset..enc_offset + enc_dim];
 
-        // Run decoder with prev_token
-        let target_data = [prev_token];
-        let target_tensor = TensorRef::from_array_view(([1_usize, 1], target_data.as_slice()))?;
+        // Run decoder with [prev_prev_token, prev_token]
+        let target_data = [prev_prev_token, prev_token];
+        let target_tensor = TensorRef::from_array_view(([1_usize, 2], target_data.as_slice()))?;
 
         let decoder_outputs = session.decoder.run(ort::inputs![target_tensor])?;
         let (_dec_shape, dec_data) = decoder_outputs[0].try_extract_tensor::<f32>()?;
@@ -74,8 +79,8 @@ pub fn greedy_decode(
         };
 
         // Joiner: combine encoder frame + decoder frame
-        let enc_tensor = TensorRef::from_array_view(([1_usize, enc_dim, 1], enc_frame))?;
-        let dec_tensor = TensorRef::from_array_view(([1_usize, dec_frame.len(), 1], dec_frame))?;
+        let enc_tensor = TensorRef::from_array_view(([1_usize, enc_dim], enc_frame))?;
+        let dec_tensor = TensorRef::from_array_view(([1_usize, dec_frame.len()], dec_frame))?;
 
         let joiner_outputs = session.joiner.run(ort::inputs![enc_tensor, dec_tensor])?;
         let (_logits_shape, logits_data) = joiner_outputs[0].try_extract_tensor::<f32>()?;
@@ -103,6 +108,7 @@ pub fn greedy_decode(
 
         if best_token != blank_id {
             result_tokens.push(best_token);
+            prev_prev_token = prev_token;
             prev_token = best_token as i64;
         }
     }

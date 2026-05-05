@@ -5,7 +5,7 @@ use std::sync::Arc;
 pub mod http;
 pub mod rate_limit;
 
-pub use http::{run_on_random_port, run_with_config};
+pub use http::{run_on_random_port, run_on_random_port_with_shutdown, run_with_config};
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -32,4 +32,18 @@ pub struct RuntimeLimits {
     pub rate_limit_burst: u32,
     pub max_session_secs: u64,
     pub shutdown_drain_secs: u64,
+}
+
+impl Default for RuntimeLimits {
+    fn default() -> Self {
+        Self {
+            idle_timeout_secs: 300,
+            ws_frame_max_bytes: 512 * 1024,
+            body_limit_bytes: 50 * 1024 * 1024,
+            rate_limit_per_minute: 0,
+            rate_limit_burst: 10,
+            max_session_secs: 3600,
+            shutdown_drain_secs: 10,
+        }
+    }
 }

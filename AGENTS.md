@@ -169,6 +169,24 @@ RUST_LOG=nihostt=debug cargo run -- serve
 - The project uses English for all code comments, documentation, and commit
   messages.
 
+## Docker
+
+```sh
+# CPU (any platform)
+docker build -t nihostt .
+docker run -p 9876:9876 nihostt
+
+# CUDA (Linux, requires NVIDIA Container Toolkit)
+docker build -f Dockerfile.cuda -t nihostt-cuda .
+docker run --gpus all -p 9876:9876 nihostt-cuda
+
+# Baked image (model included at build time, ~350 MB)
+docker build --build-arg NIHOSTT_BAKE_MODEL=1 -t nihostt:baked .
+```
+
+Docker images run with `--bind-all --host 0.0.0.0` because container networking
+requires listening on all interfaces. The non-Docker default is `127.0.0.1`.
+
 ## Environment Variables
 
 | Env var | CLI flag | Default |

@@ -1,0 +1,134 @@
+openapi: 3.0.3
+info:
+  title: nihostt API
+  description: Local Japanese speech-to-text server
+  version: 1.0.0
+  contact:
+    name: nihostt
+    url: https://github.com/ekhodzitsky/nihostt
+servers:
+  - url: http://127.0.0.1:9876
+    description: Local development server
+paths:
+  /health:
+    get:
+      summary: Health check
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /v1/models:
+    get:
+      summary: List available models
+      operationId: listModels
+      responses:
+        '200':
+          description: Model information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  model:
+                    type: string
+                    example: reazonspeech-k2-v2
+                  language:
+                    type: string
+                    example: ja
+  /v1/transcribe:
+    post:
+      summary: Transcribe an audio file
+      operationId: transcribeFile
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Audio file (WAV, MP3, M4A, FLAC, OGG)
+      responses:
+        '200':
+          description: Transcription result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  text:
+                    type: string
+                    example: こんにちは。
+        '413':
+          description: File too large
+        '503':
+          description: Server overloaded
+  /v1/transcribe/stream:
+    post:
+      summary: Stream transcription via SSE
+      operationId: transcribeStream
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Server-Sent Events stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /v1/ws:
+    get:
+      summary: WebSocket streaming endpoint
+      description: |
+        Connect via WebSocket for real-time streaming transcription.
+        
+        Protocol:
+        1. Client connects → Server sends `{"type":"ready",...}`
+        2. Client sends `{"type":"configure","sample_rate":16000}`
+        3. Client sends binary PCM16 frames
+        4. Server sends `{"type":"partial","text":"..."}` every 2s of speech
+        5. Server sends `{"type":"final","text":"..."}` on silence / stop
+        6. Client sends `{"type":"stop"}` to force finalization
+      operationId: websocketStream
+      responses:
+        '101':
+          description: WebSocket upgrade successful
+components:
+  schemas:
+    ServerMessage:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [ready, partial, final, error]
+        text:
+          type: string
+        speaker_id:
+          type: integer
+          description: Present only when diarization feature is enabled
+    ClientMessage:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [configure, stop]
+        sample_rate:
+          type: integer

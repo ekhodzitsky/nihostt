@@ -2,10 +2,10 @@
 name = "nihostt"
 version = "0.1.0"
 edition = "2024"
-description = "Local STT server powered by ReazonSpeech-k2-v2 — on-device Japanese speech recognition via ONNX Runtime"
+description = "Local Japanese speech-to-text server — on-device, real-time, privacy-first. Powered by ReazonSpeech-k2-v2 via ONNX Runtime."
 license = "MIT"
 repository = "https://github.com/ekhodzitsky/nihostt"
-keywords = ["stt", "speech-recognition", "reazonspeech", "onnx", "japanese"]
+keywords = ["stt", "speech-recognition", "reazonspeech", "onnx", "japanese", "asr", "privacy", "offline"]
 categories = ["multimedia::audio", "command-line-utilities"]
 
 [lib]
@@ -16,6 +16,8 @@ default = ["server"]
 server = ["dep:axum", "dep:tokio-stream", "dep:tokio-util"]
 coreml = ["ort/coreml"]
 cuda = ["ort/cuda"]
+diarization = []
+ffi = ["ort/nnapi"]
 
 [dependencies]
 # ONNX Runtime
@@ -86,6 +88,10 @@ prost-build = "0.14"
 [[bin]]
 name = "nihostt"
 required-features = ["server"]
+
+[[test]]
+name = "benchmark"
+harness = false
 
 [dev-dependencies]
 tempfile = "3"

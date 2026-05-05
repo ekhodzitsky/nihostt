@@ -1,19 +1,21 @@
 //! HTTP handlers for REST API and WebSocket endpoints.
 
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
-use axum::extract::{Multipart, State};
+use axum::extract::{ConnectInfo, Multipart, State};
+use axum::http::Request;
 use axum::http::StatusCode;
+use axum::middleware::Next;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{Json, Response};
+use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::{Router, extract::DefaultBodyLimit};
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-use tokio::time::{timeout, Duration, Instant};
+use tokio::time::{Duration, Instant, timeout};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::inference::{Engine, ProcessResult};
@@ -25,23 +27,44 @@ use crate::server::ServerConfig;
 pub struct AppState {
     pub engine: Arc<Engine>,
     pub limits: crate::server::RuntimeLimits,
+    pub rate_limiter: Option<Arc<crate::server::rate_limit::RateLimiter>>,
+    pub trust_proxy: bool,
 }
 
 /// Start the server with the given configuration.
 pub async fn run_with_config(
     engine: Engine,
     config: ServerConfig,
-    _shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    shutdown_rx: Option<tokio::sync::oneshot::Receiver<()>>,
 ) -> anyhow::Result<()> {
+    let rate_limiter = if config.limits.rate_limit_per_minute > 0 {
+        Some(Arc::new(crate::server::rate_limit::RateLimiter::new(
+            config.limits.rate_limit_per_minute,
+            config.limits.rate_limit_burst,
+        )))
+    } else {
+        None
+    };
+
     let state = AppState {
         engine: Arc::new(engine),
         limits: config.limits.clone(),
+        rate_limiter,
+        trust_proxy: config.trust_proxy,
     };
-    let app = create_router(state);
+    let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
     let addr: SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
     let listener = TcpListener::bind(addr).await?;
     tracing::info!("server listening on http://{}", addr);
-    axum::serve(listener, app).await?;
+
+    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+        if let Some(rx) = shutdown_rx {
+            let _ = rx.await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    });
+    server.await?;
     Ok(())
 }
 
@@ -52,29 +75,109 @@ pub async fn run_on_random_port(
     engine: Engine,
     limits: crate::server::RuntimeLimits,
 ) -> anyhow::Result<u16> {
-    let state = AppState {
-        engine: Arc::new(engine),
-        limits,
-    };
-    let app = create_router(state);
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let port = listener.local_addr()?.port();
-    tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
-            tracing::error!("server error: {e}");
-        }
-    });
+    let (port, _) = run_on_random_port_with_shutdown(engine, limits).await?;
     Ok(port)
 }
 
+/// Start the server on a random available port with a shutdown handle.
+/// Returns (port, shutdown_sender).
+pub async fn run_on_random_port_with_shutdown(
+    engine: Engine,
+    limits: crate::server::RuntimeLimits,
+) -> anyhow::Result<(u16, tokio::sync::oneshot::Sender<()>)> {
+    let rate_limiter = if limits.rate_limit_per_minute > 0 {
+        Some(Arc::new(crate::server::rate_limit::RateLimiter::new(
+            limits.rate_limit_per_minute,
+            limits.rate_limit_burst,
+        )))
+    } else {
+        None
+    };
+
+    let state = AppState {
+        engine: Arc::new(engine),
+        limits: limits.clone(),
+        rate_limiter,
+        trust_proxy: false,
+    };
+    let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+
+    let drain_secs = limits.shutdown_drain_secs;
+    tokio::spawn(async move {
+        let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+            let _ = rx.await;
+        });
+        match tokio::time::timeout(Duration::from_secs(drain_secs), server).await {
+            Ok(result) => {
+                if let Err(e) = result {
+                    tracing::error!("server error: {e}");
+                }
+            }
+            Err(_) => {
+                tracing::info!("shutdown drain timeout expired");
+            }
+        }
+    });
+
+    Ok((port, tx))
+}
+
 fn create_router(state: AppState) -> Router {
+    let state = Arc::new(state);
     Router::new()
         .route("/health", get(health_handler))
         .route("/v1/transcribe", post(transcribe_handler))
         .route("/v1/transcribe/stream", post(transcribe_stream_handler))
         .route("/v1/ws", get(ws_handler))
         .layer(DefaultBodyLimit::max(state.limits.body_limit_bytes))
-        .with_state(Arc::new(state))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit_layer,
+        ))
+        .with_state(state)
+}
+
+async fn rate_limit_layer(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    if req.uri().path() == "/health" {
+        return next.run(req).await;
+    }
+
+    if let Some(ref limiter) = state.rate_limiter {
+        let ip = if state.trust_proxy {
+            req.headers()
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.split(',').next())
+                .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
+                .unwrap_or(addr.ip())
+        } else {
+            addr.ip()
+        };
+
+        if !limiter.check(ip) {
+            let retry_after = if state.limits.rate_limit_per_minute > 0 {
+                (60.0 / state.limits.rate_limit_per_minute as f64).ceil() as u64
+            } else {
+                60
+            };
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [("retry-after", retry_after.to_string())],
+                Json(serde_json::json!({"code": "rate_limited"})),
+            )
+                .into_response();
+        }
+    }
+
+    next.run(req).await
 }
 
 // ---------------------------------------------------------------------------
@@ -96,17 +199,17 @@ async fn health_handler() -> Json<serde_json::Value> {
 async fn transcribe_handler(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<serde_json::Value>, Response> {
     // Extract the first file field from the multipart body.
     let mut file_bytes = None;
     while let Some(field) = multipart.next_field().await.map_err(|e| {
         tracing::error!("multipart parse error: {e}");
-        StatusCode::BAD_REQUEST
+        StatusCode::BAD_REQUEST.into_response()
     })? {
         if field.file_name().is_some() {
             file_bytes = Some(field.bytes().await.map_err(|e| {
                 tracing::error!("read upload bytes error: {e}");
-                StatusCode::BAD_REQUEST
+                StatusCode::BAD_REQUEST.into_response()
             })?);
             break;
         }
@@ -114,27 +217,45 @@ async fn transcribe_handler(
 
     let bytes = file_bytes.ok_or_else(|| {
         tracing::warn!("no file field in multipart upload");
-        StatusCode::BAD_REQUEST
+        StatusCode::BAD_REQUEST.into_response()
     })?;
 
     if bytes.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into_response());
     }
 
     // Write to a temporary file so symphonia can decode it.
     let temp_path = std::env::temp_dir().join(format!("nihostt_upload_{}.wav", std::process::id()));
     tokio::fs::write(&temp_path, &bytes).await.map_err(|e| {
         tracing::error!("failed to write temp file: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
     })?;
 
     let engine = state.engine.clone();
     let path_str = temp_path.to_string_lossy().to_string();
 
-    let mut guard = engine.pool.checkout().await.map_err(|e| {
-        tracing::error!("pool checkout error: {e}");
-        StatusCode::SERVICE_UNAVAILABLE
-    })?;
+    let mut guard =
+        match tokio::time::timeout(Duration::from_secs(30), engine.pool.checkout()).await {
+            Ok(Ok(g)) => g,
+            Ok(Err(e)) => {
+                tracing::error!("pool checkout error: {e}");
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    [("retry-after", "30")],
+                    Json(serde_json::json!({"code": "pool_saturated"})),
+                )
+                    .into_response());
+            }
+            Err(_) => {
+                tracing::warn!("pool checkout timed out");
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    [("retry-after", "30")],
+                    Json(serde_json::json!({"code": "timeout"})),
+                )
+                    .into_response());
+            }
+        };
 
     let result = engine.transcribe_file(&path_str, &mut guard);
     drop(guard);
@@ -144,7 +265,7 @@ async fn transcribe_handler(
 
     let result = result.map_err(|e| {
         tracing::error!("transcription error: {e}");
-        StatusCode::UNPROCESSABLE_ENTITY
+        StatusCode::UNPROCESSABLE_ENTITY.into_response()
     })?;
 
     Ok(Json(serde_json::json!({
@@ -199,15 +320,14 @@ async fn transcribe_stream_handler(
 
     // Decode audio (blocking I/O + decoding).
     let path_str = temp_path.to_string_lossy().to_string();
-    let decode_result = tokio::task::spawn_blocking(move || {
-        crate::inference::audio::load_audio(&path_str)
-    })
-    .await
-    .map_err(|e| {
-        tracing::error!("spawn_blocking join error: {e}");
-        let _ = std::fs::remove_file(&temp_path);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let decode_result =
+        tokio::task::spawn_blocking(move || crate::inference::audio::load_audio(&path_str))
+            .await
+            .map_err(|e| {
+                tracing::error!("spawn_blocking join error: {e}");
+                let _ = std::fs::remove_file(&temp_path);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
 
     let (samples, sample_rate) = match decode_result {
         Ok(r) => r,
@@ -246,15 +366,22 @@ async fn transcribe_stream_handler(
     let temp_path_clone = temp_path.clone();
 
     tokio::spawn(async move {
-        let mut guard = match engine.pool.checkout().await {
-            Ok(g) => g,
-            Err(e) => {
-                tracing::error!("pool checkout error: {e}");
-                let _ = tx.send(Err(format!("pool checkout: {e}"))).await;
-                let _ = tokio::fs::remove_file(&temp_path_clone).await;
-                return;
-            }
-        };
+        let mut guard =
+            match tokio::time::timeout(Duration::from_secs(30), engine.pool.checkout()).await {
+                Ok(Ok(g)) => g,
+                Ok(Err(e)) => {
+                    tracing::error!("pool checkout error: {e}");
+                    let _ = tx.send(Err(format!("pool checkout: {e}"))).await;
+                    let _ = tokio::fs::remove_file(&temp_path_clone).await;
+                    return;
+                }
+                Err(_) => {
+                    tracing::warn!("pool checkout timed out");
+                    let _ = tx.send(Err("pool checkout timed out".to_string())).await;
+                    let _ = tokio::fs::remove_file(&temp_path_clone).await;
+                    return;
+                }
+            };
 
         // 5-second sliding windows with 1-second overlap.
         let chunk_samples = 5 * 16000;
@@ -324,10 +451,7 @@ async fn transcribe_stream_handler(
 // WebSocket
 // ---------------------------------------------------------------------------
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<AppState>>,
-) -> Response {
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
@@ -372,6 +496,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
         if session_start.elapsed() > max_session {
             let err = ServerMessage::Error {
                 message: "session exceeded maximum duration".to_string(),
+                retry_after_ms: None,
             };
             if let Ok(json) = serde_json::to_string(&err) {
                 let _ = socket.send(WsMessage::Text(json.into())).await;
@@ -382,7 +507,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
         match msg {
             WsMessage::Text(text) => {
                 match serde_json::from_str::<ClientMessage>(&text) {
-                    Ok(ClientMessage::Configure { sample_rate: Some(sr) }) => {
+                    Ok(ClientMessage::Configure {
+                        sample_rate: Some(sr),
+                    }) => {
                         client_sample_rate = sr;
                         tracing::debug!(sample_rate = sr, "client configured sample rate");
                     }
@@ -390,19 +517,31 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                         // keep default
                     }
                     Ok(ClientMessage::Stop) => {
-                        if let Ok(mut guard) = state.engine.pool.checkout().await {
+                        let mut sent_final = false;
+                        if let Ok(Ok(mut guard)) = tokio::time::timeout(
+                            Duration::from_secs(30),
+                            state.engine.pool.checkout(),
+                        )
+                        .await
+                        {
                             match streaming_session.finalize(&mut guard) {
-                                Ok(Some(text)) => {
-                                    let msg = ServerMessage::Final { text };
-                                    if let Ok(json) = serde_json::to_string(&msg) {
-                                        let _ = socket.send(WsMessage::Text(json.into())).await;
+                                Ok(results) => {
+                                    for result in results {
+                                        if let ProcessResult::Final(text, speaker_id) = result {
+                                            let msg = ServerMessage::Final { text, speaker_id };
+                                            if let Ok(json) = serde_json::to_string(&msg) {
+                                                let _ =
+                                                    socket.send(WsMessage::Text(json.into())).await;
+                                            }
+                                            sent_final = true;
+                                        }
                                     }
                                 }
-                                Ok(None) => {}
                                 Err(e) => {
                                     tracing::error!(error = %e, "finalize error");
                                     let err = ServerMessage::Error {
                                         message: "transcription failed".to_string(),
+                                        retry_after_ms: None,
                                     };
                                     if let Ok(json) = serde_json::to_string(&err) {
                                         let _ = socket.send(WsMessage::Text(json.into())).await;
@@ -410,11 +549,21 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                                 }
                             }
                         }
+                        if !sent_final {
+                            let msg = ServerMessage::Final {
+                                text: String::new(),
+                                speaker_id: None,
+                            };
+                            if let Ok(json) = serde_json::to_string(&msg) {
+                                let _ = socket.send(WsMessage::Text(json.into())).await;
+                            }
+                        }
                         break;
                     }
                     Ok(ClientMessage::Audio { .. }) => {
                         let err = ServerMessage::Error {
                             message: "audio frames must be sent as binary messages".to_string(),
+                            retry_after_ms: None,
                         };
                         if let Ok(json) = serde_json::to_string(&err) {
                             let _ = socket.send(WsMessage::Text(json.into())).await;
@@ -424,6 +573,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                         tracing::warn!(error = %e, "invalid client message");
                         let err = ServerMessage::Error {
                             message: format!("invalid message: {e}"),
+                            retry_after_ms: None,
                         };
                         if let Ok(json) = serde_json::to_string(&err) {
                             let _ = socket.send(WsMessage::Text(json.into())).await;
@@ -435,6 +585,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                 if data.len() > frame_max {
                     let err = ServerMessage::Error {
                         message: "audio frame too large".to_string(),
+                        retry_after_ms: None,
                     };
                     if let Ok(json) = serde_json::to_string(&err) {
                         let _ = socket.send(WsMessage::Text(json.into())).await;
@@ -458,6 +609,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                             tracing::error!(error = %e, "resample error");
                             let err = ServerMessage::Error {
                                 message: "resampling failed".to_string(),
+                                retry_after_ms: None,
                             };
                             if let Ok(json) = serde_json::to_string(&err) {
                                 let _ = socket.send(WsMessage::Text(json.into())).await;
@@ -469,12 +621,29 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                     samples_f32
                 };
 
-                let mut guard = match state.engine.pool.checkout().await {
-                    Ok(g) => g,
-                    Err(e) => {
+                let mut guard = match tokio::time::timeout(
+                    Duration::from_secs(30),
+                    state.engine.pool.checkout(),
+                )
+                .await
+                {
+                    Ok(Ok(g)) => g,
+                    Ok(Err(e)) => {
                         tracing::warn!(error = %e, "pool saturated");
                         let err = ServerMessage::Error {
                             message: "server busy, try again later".to_string(),
+                            retry_after_ms: Some(30000),
+                        };
+                        if let Ok(json) = serde_json::to_string(&err) {
+                            let _ = socket.send(WsMessage::Text(json.into())).await;
+                        }
+                        continue;
+                    }
+                    Err(_) => {
+                        tracing::warn!("pool checkout timed out");
+                        let err = ServerMessage::Error {
+                            message: "server busy, try again later".to_string(),
+                            retry_after_ms: Some(30000),
                         };
                         if let Ok(json) = serde_json::to_string(&err) {
                             let _ = socket.send(WsMessage::Text(json.into())).await;
@@ -488,7 +657,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                         for result in results {
                             let msg = match result {
                                 ProcessResult::Partial(text) => ServerMessage::Partial { text },
-                                ProcessResult::Final(text) => ServerMessage::Final { text },
+                                ProcessResult::Final(text, speaker_id) => {
+                                    ServerMessage::Final { text, speaker_id }
+                                }
                                 ProcessResult::Noop => continue,
                             };
                             if let Ok(json) = serde_json::to_string(&msg)
@@ -502,6 +673,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                         tracing::error!(error = %e, "process_chunk error");
                         let err = ServerMessage::Error {
                             message: "audio processing failed".to_string(),
+                            retry_after_ms: None,
                         };
                         if let Ok(json) = serde_json::to_string(&err) {
                             let _ = socket.send(WsMessage::Text(json.into())).await;
@@ -510,7 +682,10 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                 }
             }
             WsMessage::Close(_) => {
-                if let Ok(mut guard) = state.engine.pool.checkout().await {
+                if let Ok(Ok(mut guard)) =
+                    tokio::time::timeout(Duration::from_secs(30), state.engine.pool.checkout())
+                        .await
+                {
                     let _ = streaming_session.finalize(&mut guard);
                 }
                 break;
@@ -520,12 +695,20 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     }
 
     // Best-effort finalisation on disconnect / timeout.
-    if let Ok(mut guard) = state.engine.pool.checkout().await
-        && let Ok(Some(text)) = streaming_session.finalize(&mut guard)
+    if let Ok(Ok(mut guard)) =
+        tokio::time::timeout(Duration::from_secs(30), state.engine.pool.checkout()).await
+        && let Ok(results) = streaming_session.finalize(&mut guard)
     {
-        let msg = ServerMessage::Final { text };
-        if let Ok(json) = serde_json::to_string(&msg) {
-            let _ = socket.send(WsMessage::Text(json.into())).await;
+        for result in results {
+            if let ProcessResult::Final(text, speaker_id) = result {
+                let msg = ServerMessage::Final { text, speaker_id };
+                if let Ok(json) = serde_json::to_string(&msg) {
+                    let _ = socket.send(WsMessage::Text(json.into())).await;
+                }
+            }
         }
     }
+
+    // Graceful close: send Close frame before dropping the socket.
+    let _ = socket.close().await;
 }

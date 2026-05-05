@@ -36,6 +36,7 @@
 //! - [`model`] — Model download and management
 
 pub mod error;
+pub mod ffi;
 pub mod inference;
 pub mod model;
 pub mod onnx_proto;

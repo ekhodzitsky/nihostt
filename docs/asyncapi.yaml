@@ -1,0 +1,249 @@
+asyncapi: '2.6.0'
+
+info:
+  title: nihostt WebSocket API
+  version: "1.0"
+  description: |
+    Real-time speech-to-text WebSocket API powered by ReazonSpeech-k2-v2.
+    On-device Japanese speech recognition via ONNX Runtime.
+
+    ## Connection Flow
+
+    1. Client connects to `ws://{host}:{port}/v1/ws` (default: `ws://127.0.0.1:9876/v1/ws`).
+       - Server binds `127.0.0.1` by default; use `--bind-all` (or `NIHOSTT_ALLOW_BIND_ANY=1`) plus `--host 0.0.0.0` for Docker.
+    2. Server sends `ready` message with protocol version, sample rate, and language.
+    3. (Optional) Client sends `configure` to pick a non-default `sample_rate`.
+    4. Client streams raw PCM16 audio as binary frames (default 48 kHz mono, or the negotiated rate).
+    5. Server responds with `partial` and `final` transcript messages.
+    6. Client sends `stop` (JSON) or closes connection to end session.
+
+    ## Audio Format
+
+    - Encoding: PCM16 signed little-endian
+    - Sample rate: 8,000 / 16,000 / 24,000 / 44,100 / 48,000 Hz supported; default 48 kHz (server resamples to 16 kHz internally)
+    - Channels: 1 (mono)
+    - Frame size: up to the server's `--ws-frame-max-bytes` (default 512 KiB ≈ 16 s at 16 kHz PCM16)
+
+    ## Limits & Security
+
+    All defaults below are configurable via CLI flags or environment variables
+    (see `nihostt serve --help`):
+
+    - `--pool-size` (default 4) — concurrent inference sessions
+    - `--ws-frame-max-bytes` (default 512 KiB) — max WebSocket frame / message
+    - `--body-limit-bytes` (default 50 MiB) — max REST request body
+    - `--idle-timeout-secs` (default 300) — WebSocket idle disconnect
+    - `--max-session-secs` (default 3600) — wall-clock session cap (0 disables)
+    - `--shutdown-drain-secs` (default 10) — max wait for in-flight sessions on SIGTERM
+    - `--rate-limit-per-minute` (default 0 = off) — per-IP token-bucket limit on `/v1/*` (HTTP 429 when exhausted; `/health` exempt)
+    - Bind address: 127.0.0.1 by default; `--bind-all` / `NIHOSTT_ALLOW_BIND_ANY=1` required for non-loopback
+    - Cross-origin requests: denied by default; use `--allow-origin URL` (repeatable) or `--cors-allow-any` to opt in
+    - Pool saturation: WebSocket returns `error` message; REST returns 503
+    - Internal errors hidden from clients (generic message sent)
+  license:
+    name: MIT
+    url: https://github.com/ekhodzitsky/nihostt/blob/main/LICENSE
+  contact:
+    name: nihostt
+    url: https://github.com/ekhodzitsky/nihostt
+
+servers:
+  local:
+    url: ws://127.0.0.1:9876
+    protocol: ws
+    description: Local development server (default host and port)
+  docker:
+    url: ws://0.0.0.0:9876
+    protocol: ws
+    description: Docker container (use --host 0.0.0.0 to expose)
+
+defaultContentType: application/json
+
+channels:
+  /v1/ws:
+    description: |
+      Canonical WebSocket endpoint for audio streaming and transcription.
+      Accepts binary PCM16 frames and JSON control messages.
+    publish:
+      summary: Client sends control messages and audio frames
+      message:
+        oneOf:
+          - $ref: '#/components/messages/configure'
+          - $ref: '#/components/messages/audioFrame'
+          - $ref: '#/components/messages/stop'
+    subscribe:
+      summary: Server sends ready, partial, final, and error messages
+      message:
+        oneOf:
+          - $ref: '#/components/messages/ready'
+          - $ref: '#/components/messages/partial'
+          - $ref: '#/components/messages/final'
+          - $ref: '#/components/messages/error'
+
+components:
+  messages:
+    ready:
+      name: ready
+      title: Ready
+      summary: Server is ready to accept audio
+      description: |
+        Sent immediately after WebSocket handshake.
+        Contains protocol version, expected sample rate, and language.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/ReadyMessage'
+
+    partial:
+      name: partial
+      title: Partial Transcript
+      summary: Interim transcription result (may change with more audio)
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/PartialMessage'
+
+    final:
+      name: final
+      title: Final Transcript
+      summary: Finalized transcription for a completed utterance
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/FinalMessage'
+
+    error:
+      name: error
+      title: Error
+      summary: Inference or processing error
+      description: |
+        Internal error details are hidden from clients for security.
+        The message field contains a generic user-facing description.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/ErrorMessage'
+
+    stop:
+      name: stop
+      title: Stop
+      summary: Client requests server to stop and finalize
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/StopMessage'
+
+    configure:
+      name: configure
+      title: Configure
+      summary: Client configures session parameters before sending audio
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/ConfigureMessage'
+
+    audioFrame:
+      name: audioFrame
+      title: Audio Frame
+      summary: Raw PCM16 audio data
+      description: |
+        Binary WebSocket frame containing signed 16-bit little-endian PCM samples.
+        Sample rate: one of the supported rates (default 48 kHz), mono. Each sample is 2 bytes.
+      contentType: application/octet-stream
+      payload:
+        type: string
+        format: binary
+        description: Raw PCM16 signed little-endian audio samples at the negotiated rate (mono)
+
+  schemas:
+    ReadyMessage:
+      type: object
+      required:
+        - type
+        - protocol_version
+        - sample_rate
+        - language
+      properties:
+        type:
+          type: string
+          const: ready
+          description: Message type discriminator
+        protocol_version:
+          type: string
+          example: "1.0"
+          description: WebSocket protocol version
+        sample_rate:
+          type: integer
+          example: 16000
+          description: Server's internal processing sample rate in Hz
+        language:
+          type: string
+          example: ja
+          description: Language code of the model
+
+    PartialMessage:
+      type: object
+      required:
+        - type
+        - text
+      properties:
+        type:
+          type: string
+          const: partial
+          description: Message type discriminator
+        text:
+          type: string
+          example: "こんにちは"
+          description: Current interim transcription (may change as more audio arrives)
+
+    FinalMessage:
+      type: object
+      required:
+        - type
+        - text
+      properties:
+        type:
+          type: string
+          const: final
+          description: Message type discriminator
+        text:
+          type: string
+          example: "こんにちは、お元気ですか。"
+          description: Finalized transcription for the completed utterance
+        speaker_id:
+          type: integer
+          example: 0
+          description: Speaker identifier when diarization feature is enabled
+
+    ErrorMessage:
+      type: object
+      required:
+        - type
+        - message
+      properties:
+        type:
+          type: string
+          const: error
+          description: Message type discriminator
+        message:
+          type: string
+          example: "audio processing failed"
+          description: User-facing error description (internal details are hidden)
+
+    ConfigureMessage:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          const: configure
+          description: Message type discriminator
+        sample_rate:
+          type: integer
+          example: 16000
+          description: Input audio sample rate in Hz (one of 8000, 16000, 24000, 44100, 48000)
+
+    StopMessage:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          const: stop
+          description: Message type discriminator

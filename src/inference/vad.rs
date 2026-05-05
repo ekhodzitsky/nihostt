@@ -17,7 +17,7 @@ impl SileroVad {
             .map_err(|e| NihosttError::vad(format!("failed to load VAD: {e}")))?;
 
         // Silero VAD expects 512 samples for 16kHz
-        let state_size = 2 * 128; // h + c for LSTM
+        let state_size = 256; // h + c for LSTM, shape [2, 1, 128] = 2*1*128
         Ok(Self {
             session,
             sample_rate: 16000,
@@ -57,11 +57,12 @@ impl SileroVad {
         let sr_data = [self.sample_rate];
         let sr_tensor = TensorRef::from_array_view(([1_usize], sr_data.as_slice()))?;
 
-        let state_tensor = TensorRef::from_array_view(([2_usize, 128], self.state.as_slice()))?;
+        let state_tensor =
+            TensorRef::from_array_view(([2_usize, 1_usize, 128], self.state.as_slice()))?;
 
         let outputs = self
             .session
-            .run(ort::inputs![input_tensor, sr_tensor, state_tensor])?;
+            .run(ort::inputs![input_tensor, state_tensor, sr_tensor])?;
 
         let (_prob_shape, prob_data) = outputs[0].try_extract_tensor::<f32>()?;
         let prob = prob_data.first().copied().unwrap_or(0.0);
@@ -77,5 +78,26 @@ impl SileroVad {
     pub fn reset(&mut self) {
         self.state.fill(0.0);
         self.context.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vad_tensor_shape() {
+        let state = vec![0.0f32; 256];
+        let t = TensorRef::from_array_view(([2_usize, 1_usize, 128], state.as_slice()));
+        assert!(t.is_ok(), "3D tensor should be created: {:?}", t.err());
+    }
+
+    #[test]
+    fn test_vad_process_silence() {
+        let model_dir = dirs::home_dir().unwrap().join(".nihostt/models");
+        let mut vad = SileroVad::new(&model_dir.join("silero_vad.onnx")).unwrap();
+        let silence = vec![0.0f32; 512];
+        let prob = vad.process(&silence).unwrap();
+        assert!((0.0..=1.0).contains(&prob));
     }
 }

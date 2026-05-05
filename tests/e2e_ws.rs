@@ -63,9 +63,20 @@ async fn test_ws_audio_chunks_receives_final() {
     let ready: serde_json::Value = serde_json::from_str(&text).expect("expected JSON");
     assert_eq!(ready["type"], "ready");
 
-    // Send 2 seconds of PCM16 silence at 16kHz
-    let silence = common::generate_pcm16_silence(2.0, 16000);
-    sink.send(Message::Binary(silence.into()))
+    // Configure sample rate to match fixture
+    sink.send(Message::Text(
+        serde_json::to_string(&serde_json::json!({"type": "configure", "sample_rate": 16000}))
+            .unwrap()
+            .into(),
+    ))
+    .await
+    .expect("failed to send configure");
+
+    // Send actual speech audio from fixture (mono PCM16 @ 16kHz)
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/benchmark/clip_long.wav");
+    let audio = common::wav_to_pcm16(&fixture);
+    sink.send(Message::Binary(audio.into()))
         .await
         .expect("failed to send audio");
 
@@ -86,19 +97,22 @@ async fn test_ws_audio_chunks_receives_final() {
             .expect("stream ended")
             .expect("ws error");
 
-        let text = msg.into_text().expect("expected text message");
-        let v: serde_json::Value = serde_json::from_str(&text).expect("expected JSON");
-
-        match v["type"].as_str().unwrap_or("") {
-            "partial" => continue,
-            "final" => {
-                assert!(
-                    v["text"].is_string(),
-                    "Final message should have a text field"
-                );
-                break;
+        match msg {
+            Message::Text(text) => {
+                let v: serde_json::Value = serde_json::from_str(&text).expect("expected JSON");
+                match v["type"].as_str().unwrap_or("") {
+                    "partial" => continue,
+                    "final" => {
+                        assert!(
+                            v["text"].is_string(),
+                            "Final message should have a text field"
+                        );
+                        break;
+                    }
+                    other => panic!("Unexpected message type: {other}, full: {text}"),
+                }
             }
-            other => panic!("Unexpected message type: {other}, full: {text}"),
+            _ => continue,
         }
     }
 }

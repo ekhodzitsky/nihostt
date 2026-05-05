@@ -8,7 +8,10 @@ use tokio::sync::Semaphore;
 
 pub mod audio;
 pub mod decode;
+#[cfg(feature = "diarization")]
+pub mod diarization;
 pub mod features;
+pub mod punctuation;
 pub mod vad;
 
 /// Number of mel frequency bins for ReazonSpeech-k2-v2.
@@ -44,11 +47,11 @@ pub struct InferenceResult {
 }
 
 /// Result returned by [`StreamingSession::process_chunk`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub enum ProcessResult {
     Noop,
     Partial(String),
-    Final(String),
+    Final(String, Option<u32>),
 }
 
 /// A pooled ONNX session triplet (encoder + decoder + joiner).
@@ -101,9 +104,7 @@ impl SessionPool {
             .try_acquire_owned()
             .context("pool semaphore closed")?;
         let mut sessions = self.sessions.blocking_lock();
-        let session = sessions
-            .pop()
-            .ok_or_else(|| NihosttError::PoolSaturated)?;
+        let session = sessions.pop().ok_or_else(|| NihosttError::PoolSaturated)?;
         Ok(BlockingSessionGuard {
             pool: self,
             session: Some(session),
@@ -121,13 +122,17 @@ pub struct SessionGuard<'a> {
 impl<'a> std::ops::Deref for SessionGuard<'a> {
     type Target = PooledSession;
     fn deref(&self) -> &Self::Target {
-        self.session.as_ref().expect("session is always present until drop")
+        self.session
+            .as_ref()
+            .expect("session is always present until drop")
     }
 }
 
 impl<'a> std::ops::DerefMut for SessionGuard<'a> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.session.as_mut().expect("session is always present until drop")
+        self.session
+            .as_mut()
+            .expect("session is always present until drop")
     }
 }
 
@@ -162,13 +167,34 @@ unsafe impl Send for BlockingSessionGuard {}
 impl std::ops::Deref for BlockingSessionGuard {
     type Target = PooledSession;
     fn deref(&self) -> &Self::Target {
-        self.session.as_ref().expect("session is always present until drop")
+        self.session
+            .as_ref()
+            .expect("session is always present until drop")
     }
 }
 
 impl std::ops::DerefMut for BlockingSessionGuard {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.session.as_mut().expect("session is always present until drop")
+        self.session
+            .as_mut()
+            .expect("session is always present until drop")
+    }
+}
+
+impl BlockingSessionGuard {
+    /// Mutable reference to the pooled session.
+    pub fn session(&mut self) -> &mut PooledSession {
+        self.session
+            .as_mut()
+            .expect("session is always present until drop")
+    }
+
+    /// Take ownership of the pooled session, consuming the guard without
+    /// returning the session to the pool.
+    pub fn into_inner(mut self) -> PooledSession {
+        self.session
+            .take()
+            .expect("session is always present until drop")
     }
 }
 
@@ -225,7 +251,9 @@ impl Engine {
     ) -> anyhow::Result<InferenceResult> {
         let mel = features::compute_mel(samples, 16000)?;
         let text = decode::greedy_decode(&mel, session, &self.tokens)?;
-        Ok(InferenceResult { text })
+        Ok(InferenceResult {
+            text: punctuation::auto_punctuate(&text),
+        })
     }
 
     pub fn create_streaming_session(&self) -> StreamingSession {
@@ -251,12 +279,20 @@ pub struct StreamingSession {
     silence_start_sample: Option<usize>,
     /// Sample index of the last partial emission.
     last_partial_at: usize,
+    #[cfg(feature = "diarization")]
+    speaker_encoder: Option<diarization::SpeakerEncoder>,
+    #[cfg(feature = "diarization")]
+    speaker_cluster: diarization::SpeakerCluster,
 }
 
 impl StreamingSession {
     pub fn new(model_dir: PathBuf, tokens: Vec<String>) -> Self {
         let vad = vad::SileroVad::new(&model_dir.join("silero_vad.onnx"))
             .expect("failed to load VAD model");
+        #[cfg(feature = "diarization")]
+        let speaker_encoder = diarization::SpeakerEncoder::load(&model_dir).ok();
+        #[cfg(feature = "diarization")]
+        let speaker_cluster = diarization::SpeakerCluster::new();
         Self {
             tokens,
             vad,
@@ -267,6 +303,10 @@ impl StreamingSession {
             last_speech_sample: 0,
             silence_start_sample: None,
             last_partial_at: 0,
+            #[cfg(feature = "diarization")]
+            speaker_encoder,
+            #[cfg(feature = "diarization")]
+            speaker_cluster,
         }
     }
 
@@ -317,7 +357,11 @@ impl StreamingSession {
                         "VAD: speech end detected (silence)"
                     );
                     let text = self.transcribe_segment(session)?;
-                    results.push(ProcessResult::Final(text));
+                    let speaker_id = self.extract_speaker_id();
+                    results.push(ProcessResult::Final(
+                        punctuation::auto_punctuate(&text),
+                        speaker_id,
+                    ));
                     self.reset_after_final();
                     continue;
                 }
@@ -329,7 +373,11 @@ impl StreamingSession {
                 if segment_samples >= MAX_SEGMENT_SAMPLES {
                     tracing::debug!(segment_samples, "VAD: forcing final (max segment duration)");
                     let text = self.transcribe_segment(session)?;
-                    results.push(ProcessResult::Final(text));
+                    let speaker_id = self.extract_speaker_id();
+                    results.push(ProcessResult::Final(
+                        punctuation::auto_punctuate(&text),
+                        speaker_id,
+                    ));
                     self.reset_after_final();
                     continue;
                 }
@@ -337,7 +385,7 @@ impl StreamingSession {
                 if frame_end.saturating_sub(self.last_partial_at) >= PARTIAL_SAMPLES {
                     let text = self.transcribe_partial(session)?;
                     if !text.is_empty() {
-                        results.push(ProcessResult::Partial(text));
+                        results.push(ProcessResult::Partial(punctuation::auto_punctuate(&text)));
                     }
                     self.last_partial_at = frame_end;
                 }
@@ -348,7 +396,9 @@ impl StreamingSession {
     }
 
     /// Finalise any pending speech segment (called on `Stop` or disconnect).
-    pub fn finalize(&mut self, session: &mut PooledSession) -> anyhow::Result<Option<String>> {
+    pub fn finalize(&mut self, session: &mut PooledSession) -> anyhow::Result<Vec<ProcessResult>> {
+        let mut results = Vec::new();
+
         // Drain any remaining complete VAD frames first.
         while self.vad_processed + VAD_FRAME_SAMPLES <= self.audio_buffer.len() {
             let frame_start = self.vad_processed;
@@ -378,8 +428,12 @@ impl StreamingSession {
                     .saturating_sub(self.speech_start_sample);
                 if silence_samples >= SILENCE_END_SAMPLES && speech_samples >= MIN_SPEECH_SAMPLES {
                     let text = self.transcribe_segment(session)?;
+                    let speaker_id = self.extract_speaker_id();
+                    results.push(ProcessResult::Final(
+                        punctuation::auto_punctuate(&text),
+                        speaker_id,
+                    ));
                     self.reset_after_final();
-                    return Ok(Some(text));
                 }
             }
         }
@@ -390,12 +444,13 @@ impl StreamingSession {
                 .saturating_sub(self.speech_start_sample);
             if speech_samples >= MIN_SPEECH_SAMPLES {
                 let text = self.transcribe_segment(session)?;
+                let speaker_id = self.extract_speaker_id();
+                results.push(ProcessResult::Final(text, speaker_id));
                 self.reset_after_final();
-                return Ok(Some(text));
             }
         }
 
-        Ok(None)
+        Ok(results)
     }
 
     fn transcribe_segment(&self, session: &mut PooledSession) -> anyhow::Result<String> {
@@ -430,6 +485,28 @@ impl StreamingSession {
         self.last_partial_at = 0;
         self.vad.reset();
     }
+
+    /// Extract a speaker ID for the current speech segment.
+    #[cfg(feature = "diarization")]
+    fn extract_speaker_id(&mut self) -> Option<u32> {
+        let encoder = self.speaker_encoder.as_ref()?;
+        let start = self.speech_start_sample.saturating_sub(PAD_SAMPLES);
+        let end = (self.last_speech_sample + PAD_SAMPLES).min(self.audio_buffer.len());
+        let segment = &self.audio_buffer[start..end];
+
+        let mut buf = [0.0f32; diarization::SEGMENT_SAMPLES];
+        let copy_len = segment.len().min(diarization::SEGMENT_SAMPLES);
+        buf[..copy_len].copy_from_slice(&segment[..copy_len]);
+
+        let embedding = encoder.extract_embedding(&buf).ok()?;
+        Some(self.speaker_cluster.assign(&embedding))
+    }
+
+    /// No-op fallback when diarization feature is disabled.
+    #[cfg(not(feature = "diarization"))]
+    fn extract_speaker_id(&mut self) -> Option<u32> {
+        None
+    }
 }
 
 fn load_session_triplet(model_dir: &Path) -> anyhow::Result<PooledSession> {
@@ -456,6 +533,9 @@ fn load_tokens(model_dir: &Path) -> anyhow::Result<Vec<String>> {
     let path = model_dir.join("tokens.txt");
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let tokens: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+    let tokens: Vec<String> = content
+        .lines()
+        .map(|s| s.split('\t').next().unwrap_or(s).to_string())
+        .collect();
     Ok(tokens)
 }
