@@ -5,7 +5,7 @@
 # CUDA binary falls back to CPU if no GPU is available at runtime.
 
 # --- Builder stage ---
-FROM nvidia/cuda:12.6.3-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:12.6.3-devel-ubuntu24.04 AS builder
 
 # `protobuf-compiler` feeds prost-build (build.rs); everything else is the
 # baseline toolchain needed to compile the crate + its C deps.
@@ -37,7 +37,7 @@ RUN mkdir -p tests && echo '' > tests/benchmark.rs && \
     strip target/release/nihostt
 
 # --- Model bake stage (runs only when NIHOSTT_BAKE_MODEL=1) ---
-FROM debian:bookworm-slim AS model-fetcher
+FROM ubuntu:24.04 AS model-fetcher
 
 ARG NIHOSTT_BAKE_MODEL=0
 
@@ -53,7 +53,7 @@ RUN mkdir -p /models && \
     fi
 
 # --- Runtime stage ---
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
 
 ARG NIHOSTT_BAKE_MODEL=0
 

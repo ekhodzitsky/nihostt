@@ -3,13 +3,20 @@
 # Run:   docker run -p 9876:9876 nihostt
 
 # --- Builder stage ---
-FROM rust:1.93-bookworm AS builder
+# Ubuntu 24.04 provides glibc 2.39, required by prebuilt ONNX Runtime
+# binaries downloaded by ort (which reference __isoc23_* symbols).
+FROM ubuntu:24.04 AS builder
 
-# `prost-build` (via build.rs) requires `protoc` at compile time; without it
-# the build aborts with "prost-build failed to compile proto/onnx.proto".
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends protobuf-compiler libssl-dev pkg-config && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl build-essential pkg-config \
+        protobuf-compiler libssl-dev && \
     rm -rf /var/lib/apt/lists/*
+
+# Install Rust toolchain
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain 1.93.0
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 WORKDIR /build
 
@@ -34,7 +41,7 @@ RUN mkdir -p tests && echo '' > tests/benchmark.rs && \
     strip target/release/nihostt
 
 # --- Model bake stage (runs only when NIHOSTT_BAKE_MODEL=1) ---
-FROM debian:bookworm-slim AS model-fetcher
+FROM ubuntu:24.04 AS model-fetcher
 
 ARG NIHOSTT_BAKE_MODEL=0
 
@@ -50,7 +57,7 @@ RUN mkdir -p /models && \
     fi
 
 # --- Runtime stage ---
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 
 ARG NIHOSTT_BAKE_MODEL=0
 
