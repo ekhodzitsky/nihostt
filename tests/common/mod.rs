@@ -40,7 +40,7 @@ pub async fn start_server() -> u16 {
 /// Returns (port, shutdown_sender).
 pub async fn start_server_with_limits(
     limits: nihostt::server::RuntimeLimits,
-) -> (u16, tokio::sync::oneshot::Sender<()>) {
+) -> (u16, tokio_util::sync::CancellationToken) {
     let model_dir = nihostt::model::default_model_dir();
     let encoder_path = std::path::Path::new(&model_dir).join("encoder-epoch-99-avg-1.onnx");
     assert!(

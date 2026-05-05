@@ -73,5 +73,5 @@ async fn test_rate_limit_burst_then_refill() {
         .expect("health request");
     assert_eq!(health.status().as_u16(), 200, "/health must be exempt");
 
-    let _ = shutdown.send(());
+    shutdown.cancel();
 }

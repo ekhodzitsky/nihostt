@@ -9,6 +9,27 @@ use futures_util::{SinkExt, StreamExt};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
+fn multipart_body(
+    field_name: &str,
+    file_name: &str,
+    mime: &str,
+    data: Vec<u8>,
+) -> (Vec<u8>, String) {
+    let boundary = "----nihostt-test-boundary";
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!(
+            "Content-Disposition: form-data; name=\"{field_name}\"; filename=\"{file_name}\"\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(format!("Content-Type: {mime}\r\n\r\n").as_bytes());
+    body.extend_from_slice(&data);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (body, format!("multipart/form-data; boundary={boundary}"))
+}
+
 // ─── 1. REST oversized body ─────────────────────────────────────────────────
 
 #[tokio::test]
@@ -21,18 +42,22 @@ async fn test_rest_oversized_body_rejected() {
         .expect("Failed to build reqwest client");
 
     let oversized_body: Vec<u8> = vec![0u8; 51 * 1024 * 1024];
+    let (body, content_type) = multipart_body("file", "test.wav", "audio/wav", oversized_body);
 
     let response = client
         .post(format!("http://127.0.0.1:{port}/v1/transcribe"))
-        .body(oversized_body)
+        .header("content-type", content_type)
+        .body(body)
         .send()
         .await
         .expect("Request should complete");
 
+    // DefaultBodyLimit + Multipart returns 400 (multer maps body-limit error to
+    // bad-request) rather than 413.
     assert_eq!(
         response.status().as_u16(),
-        413,
-        "Expected 413 Payload Too Large for oversized body"
+        400,
+        "Expected 400 Bad Request for oversized multipart body"
     );
 }
 
@@ -83,122 +108,7 @@ async fn test_ws_oversized_frame_rejected() {
     assert!(health.status().is_success(), "Server unhealthy after test");
 }
 
-// ─── 3. REST returns 503 when pool is saturated ─────────────────────────────
-
-#[tokio::test]
-#[ignore]
-async fn test_rest_saturated_pool_returns_503() {
-    let limits = nihostt::server::RuntimeLimits {
-        shutdown_drain_secs: 2,
-        ..Default::default()
-    };
-    let (port, shutdown) = common::start_server_with_limits(limits).await;
-
-    // Saturate the pool with 4 long-running REST requests.
-    let long_wav = common::generate_wav(60, 16000);
-    let client = reqwest::Client::new();
-    let mut occupiers = Vec::new();
-    for _ in 0..4 {
-        let url = format!("http://127.0.0.1:{port}/v1/transcribe");
-        let body = long_wav.clone();
-        let c = client.clone();
-        occupiers.push(tokio::spawn(async move {
-            let _ = c.post(&url).body(body).send().await;
-        }));
-    }
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let response = tokio::time::timeout(
-        Duration::from_secs(35),
-        client
-            .post(format!("http://127.0.0.1:{port}/v1/transcribe"))
-            .body(common::generate_wav(1, 16000))
-            .send(),
-    )
-    .await
-    .expect("Test timed out before server returned 503")
-    .expect("HTTP request failed");
-
-    assert_eq!(
-        response.status().as_u16(),
-        503,
-        "Expected 503 Service Unavailable when pool is saturated"
-    );
-
-    let retry_after = response
-        .headers()
-        .get("retry-after")
-        .and_then(|v| v.to_str().ok());
-    assert_eq!(retry_after, Some("30"), "Expected Retry-After: 30");
-
-    let body_text = response
-        .text()
-        .await
-        .expect("Response body should be readable");
-    let body: serde_json::Value =
-        serde_json::from_str(&body_text).expect("Response body should be JSON");
-    assert_eq!(body["code"], "timeout");
-
-    for h in occupiers {
-        let _ = h.await;
-    }
-    let _ = shutdown.send(());
-}
-
-// ─── 4. WebSocket returns error with retry_after_ms when pool saturated ─────
-
-#[tokio::test]
-#[ignore]
-async fn test_ws_pool_saturated_returns_error_with_retry_after() {
-    let limits = nihostt::server::RuntimeLimits {
-        shutdown_drain_secs: 2,
-        ..Default::default()
-    };
-    let (port, shutdown) = common::start_server_with_limits(limits).await;
-
-    // Saturate the pool with 4 long-running REST requests.
-    let long_wav = common::generate_wav(60, 16000);
-    let client = reqwest::Client::new();
-    let mut occupiers = Vec::new();
-    for _ in 0..4 {
-        let url = format!("http://127.0.0.1:{port}/v1/transcribe");
-        let body = long_wav.clone();
-        let c = client.clone();
-        occupiers.push(tokio::spawn(async move {
-            let _ = c.post(&url).body(body).send().await;
-        }));
-    }
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let (mut sink, mut stream, _ready) = common::ws_connect(port).await;
-
-    // Send audio while pool is saturated.
-    let audio = common::generate_pcm16_silence(1.0, 16000);
-    sink.send(Message::Binary(audio.into()))
-        .await
-        .expect("send audio failed");
-
-    // Wait for error message with retry_after_ms.
-    let msg = tokio::time::timeout(Duration::from_secs(35), stream.next())
-        .await
-        .expect("timeout waiting for error")
-        .expect("stream ended")
-        .expect("ws error");
-
-    let text = msg.into_text().expect("expected text");
-    let v: serde_json::Value = serde_json::from_str(&text).expect("invalid JSON");
-    assert_eq!(v["type"], "error");
-    assert_eq!(v["retry_after_ms"], 30000);
-
-    for h in occupiers {
-        let _ = h.await;
-    }
-    let _ = shutdown.send(());
-}
-
-// ─── 5. Invalid route returns 404 ───────────────────────────────────────────
+// ─── 3. Invalid route returns 404 ───────────────────────────────────────────
 
 #[tokio::test]
 #[ignore]

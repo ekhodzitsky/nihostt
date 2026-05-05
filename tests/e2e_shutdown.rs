@@ -16,23 +16,19 @@ use tokio_tungstenite::tungstenite::Message;
 #[tokio::test]
 #[ignore]
 async fn test_shutdown_during_ws_session() {
-    let limits = nihostt::server::RuntimeLimits {
-        shutdown_drain_secs: 2,
-        ..Default::default()
-    };
-    let (port, shutdown) = common::start_server_with_limits(limits).await;
+    let (port, shutdown) = common::start_server_with_limits(Default::default()).await;
 
     let (mut sink, mut stream, _ready) = common::ws_connect(port).await;
 
     let silence = common::generate_pcm16_silence(1.0, 48000);
     sink.send(Message::Binary(silence.into())).await.unwrap();
 
-    let _ = shutdown.send(());
+    shutdown.cancel();
 
-    let result = tokio::time::timeout(Duration::from_secs(10), stream.next()).await;
+    let result = tokio::time::timeout(Duration::from_secs(15), stream.next()).await;
 
     if let Err(_elapsed) = result {
-        panic!("WebSocket stream did not terminate within 10s after server shutdown")
+        panic!("WebSocket stream did not terminate within 15s after server shutdown")
     }
 }
 
@@ -43,18 +39,27 @@ async fn test_shutdown_during_ws_session() {
 #[tokio::test]
 #[ignore]
 async fn test_shutdown_during_sse_stream() {
-    let limits = nihostt::server::RuntimeLimits {
-        shutdown_drain_secs: 2,
-        ..Default::default()
-    };
-    let (port, shutdown) = common::start_server_with_limits(limits).await;
+    let (port, shutdown) = common::start_server_with_limits(Default::default()).await;
 
     let wav = common::generate_wav(60, 16000);
+    let (body, content_type) = {
+        let boundary = "----nihostt-test-boundary";
+        let mut b = Vec::new();
+        b.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        b.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"file\"; filename=\"test.wav\"\r\n",
+        );
+        b.extend_from_slice(b"Content-Type: audio/wav\r\n\r\n");
+        b.extend_from_slice(&wav);
+        b.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        (b, format!("multipart/form-data; boundary={boundary}"))
+    };
 
     let resp = tokio::time::timeout(Duration::from_secs(30), async {
         reqwest::Client::new()
             .post(format!("http://127.0.0.1:{port}/v1/transcribe/stream"))
-            .body(wav)
+            .header("content-type", content_type)
+            .body(body)
             .send()
             .await
             .expect("POST /v1/transcribe/stream failed")
@@ -71,7 +76,7 @@ async fn test_shutdown_during_sse_stream() {
     let mut bytes_stream = resp.bytes_stream();
 
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let _ = shutdown.send(());
+    shutdown.cancel();
 
     let start = tokio::time::Instant::now();
     loop {

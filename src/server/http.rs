@@ -17,6 +17,7 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant, timeout};
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::CancellationToken;
 
 use crate::inference::{Engine, ProcessResult};
 use crate::protocol::{ClientMessage, ServerMessage};
@@ -29,6 +30,7 @@ pub struct AppState {
     pub limits: crate::server::RuntimeLimits,
     pub rate_limiter: Option<Arc<crate::server::rate_limit::RateLimiter>>,
     pub trust_proxy: bool,
+    pub shutdown: CancellationToken,
 }
 
 /// Start the server with the given configuration.
@@ -46,11 +48,13 @@ pub async fn run_with_config(
         None
     };
 
+    let cancel = CancellationToken::new();
     let state = AppState {
         engine: Arc::new(engine),
         limits: config.limits.clone(),
         rate_limiter,
         trust_proxy: config.trust_proxy,
+        shutdown: cancel.clone(),
     };
     let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
     let addr: SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
@@ -63,6 +67,7 @@ pub async fn run_with_config(
         } else {
             std::future::pending::<()>().await;
         }
+        cancel.cancel();
     });
     server.await?;
     Ok(())
@@ -75,16 +80,19 @@ pub async fn run_on_random_port(
     engine: Engine,
     limits: crate::server::RuntimeLimits,
 ) -> anyhow::Result<u16> {
-    let (port, _) = run_on_random_port_with_shutdown(engine, limits).await?;
+    let (port, tx) = run_on_random_port_with_shutdown(engine, limits).await?;
+    // Prevent graceful shutdown — old behaviour for tests that don't need
+    // a shutdown handle. Leak the sender so the receiver never fires.
+    let _ = Box::leak(Box::new(tx));
     Ok(port)
 }
 
 /// Start the server on a random available port with a shutdown handle.
-/// Returns (port, shutdown_sender).
+/// Returns (port, cancellation_token).
 pub async fn run_on_random_port_with_shutdown(
     engine: Engine,
     limits: crate::server::RuntimeLimits,
-) -> anyhow::Result<(u16, tokio::sync::oneshot::Sender<()>)> {
+) -> anyhow::Result<(u16, CancellationToken)> {
     let rate_limiter = if limits.rate_limit_per_minute > 0 {
         Some(Arc::new(crate::server::rate_limit::RateLimiter::new(
             limits.rate_limit_per_minute,
@@ -94,21 +102,29 @@ pub async fn run_on_random_port_with_shutdown(
         None
     };
 
+    let cancel = CancellationToken::new();
     let state = AppState {
         engine: Arc::new(engine),
         limits: limits.clone(),
         rate_limiter,
         trust_proxy: false,
+        shutdown: cancel.clone(),
     };
     let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
-    let (tx, rx) = tokio::sync::oneshot::channel();
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    // Leak the sender so the receiver never fires — server runs until
+    // the drain timeout or external cancellation.
+    let _ = Box::leak(Box::new(tx));
 
     let drain_secs = limits.shutdown_drain_secs;
+    let cancel_clone = cancel.clone();
+    let cancel_drain = cancel.clone();
     tokio::spawn(async move {
         let server = axum::serve(listener, app).with_graceful_shutdown(async move {
             let _ = rx.await;
+            cancel_clone.cancel();
         });
         match tokio::time::timeout(Duration::from_secs(drain_secs), server).await {
             Ok(result) => {
@@ -118,11 +134,12 @@ pub async fn run_on_random_port_with_shutdown(
             }
             Err(_) => {
                 tracing::info!("shutdown drain timeout expired");
+                cancel_drain.cancel();
             }
         }
     });
 
-    Ok((port, tx))
+    Ok((port, cancel))
 }
 
 fn create_router(state: AppState) -> Router {
@@ -477,19 +494,26 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
 
     loop {
         let recv_fut = timeout(idle_timeout, socket.recv());
-        let msg = match recv_fut.await {
-            Ok(Some(Ok(msg))) => msg,
-            Ok(Some(Err(e))) => {
-                tracing::warn!(error = %e, "websocket receive error");
+        let msg = tokio::select! {
+            biased;
+            _ = state.shutdown.cancelled() => {
+                tracing::info!("websocket shutting down due to server stop");
                 break;
             }
-            Ok(None) => {
-                tracing::debug!("websocket stream closed by client");
-                break;
-            }
-            Err(_) => {
-                tracing::info!("websocket idle timeout");
-                break;
+            result = recv_fut => match result {
+                Ok(Some(Ok(msg))) => msg,
+                Ok(Some(Err(e))) => {
+                    tracing::warn!(error = %e, "websocket receive error");
+                    break;
+                }
+                Ok(None) => {
+                    tracing::debug!("websocket stream closed by client");
+                    break;
+                }
+                Err(_) => {
+                    tracing::info!("websocket idle timeout");
+                    break;
+                }
             }
         };
 

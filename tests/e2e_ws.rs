@@ -73,8 +73,8 @@ async fn test_ws_audio_chunks_receives_final() {
     .expect("failed to send configure");
 
     // Send actual speech audio from fixture (mono PCM16 @ 16kHz)
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/benchmark/clip_long.wav");
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tatoeba/80461.wav");
     let audio = common::wav_to_pcm16(&fixture);
     sink.send(Message::Binary(audio.into()))
         .await

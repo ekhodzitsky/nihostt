@@ -539,3 +539,28 @@ fn load_tokens(model_dir: &Path) -> anyhow::Result<Vec<String>> {
         .collect();
     Ok(tokens)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::time::timeout;
+
+    #[tokio::test]
+    #[ignore] // Requires model download
+    async fn test_pool_checkout_blocks_when_saturated() {
+        let model_dir = crate::model::default_model_dir();
+        let pool = SessionPool::new(Path::new(&model_dir), 1).unwrap();
+
+        let guard = pool.checkout().await.unwrap();
+
+        // Second checkout should timeout because the only session is held.
+        let result = timeout(Duration::from_secs(1), pool.checkout()).await;
+        assert!(result.is_err(), "Expected timeout when pool is saturated");
+
+        drop(guard);
+
+        // After dropping the guard, checkout should succeed again.
+        let _guard2 = pool.checkout().await.unwrap();
+    }
+}
