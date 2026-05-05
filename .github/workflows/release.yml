@@ -287,4 +287,3 @@ jobs:
             dist/*.sha256
             dist/SHA256SUMS.txt
             dist/*.cdx.json
-            dist/*.minisig
