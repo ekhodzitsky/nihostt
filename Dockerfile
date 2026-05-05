@@ -8,7 +8,7 @@ FROM rust:1.93-bookworm AS builder
 # `prost-build` (via build.rs) requires `protoc` at compile time; without it
 # the build aborts with "prost-build failed to compile proto/onnx.proto".
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends protobuf-compiler && \
+    apt-get install -y --no-install-recommends protobuf-compiler libssl-dev pkg-config && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -55,7 +55,7 @@ FROM debian:bookworm-slim
 ARG NIHOSTT_BAKE_MODEL=0
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl && \
+    apt-get install -y --no-install-recommends ca-certificates curl libssl3 && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/nihostt /usr/local/bin/nihostt

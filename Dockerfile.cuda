@@ -10,7 +10,7 @@ FROM nvidia/cuda:12.6.3-devel-ubuntu22.04 AS builder
 # `protobuf-compiler` feeds prost-build (build.rs); everything else is the
 # baseline toolchain needed to compile the crate + its C deps.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl build-essential pkg-config protobuf-compiler && \
+    apt-get install -y --no-install-recommends curl build-essential pkg-config protobuf-compiler libssl-dev && \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.93.0 && \
     rm -rf /var/lib/apt/lists/*
 
@@ -58,7 +58,7 @@ FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
 ARG NIHOSTT_BAKE_MODEL=0
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl && \
+    apt-get install -y --no-install-recommends ca-certificates curl libssl3 && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy binary AND ort's dynamic libraries (.so files copied by copy-dylibs)

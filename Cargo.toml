@@ -34,7 +34,7 @@ futures-util = "0.3"
 clap = { version = "4", features = ["derive", "env"] }
 
 # HTTP client for model download
-reqwest = { version = "0.13", features = ["stream", "multipart"] }
+reqwest = { version = "0.13", default-features = false, features = ["stream", "multipart", "native-tls"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -96,7 +96,7 @@ harness = false
 [dev-dependencies]
 tempfile = "3"
 tokio-tungstenite = "0.29"
-reqwest = { version = "0.13", features = ["multipart"] }
+reqwest = { version = "0.13", default-features = false, features = ["multipart", "native-tls"] }
 
 [profile.release]
 lto = true
