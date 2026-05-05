@@ -16,6 +16,13 @@ const VAD_URL: &str =
     "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx";
 const VAD_FILENAME: &str = "silero_vad.onnx";
 
+// WeSpeaker ResNet34 ONNX (Apache 2.0) — used as the default speaker-embedding
+// model for diarization when ecapa_tdnn.onnx is not present.
+// Mirrored on HuggingFace for reliability (original: WenET WeSpeaker CDN).
+const WESPEAKER_URL: &str = "https://huggingface.co/hbredin/wespeaker-voxceleb-resnet34-LM/resolve/main/speaker-embedding.onnx";
+const WESPEAKER_FILENAME: &str = "wespeaker_resnet34.onnx";
+const WESPEAKER_SHA256: &str = "7bb2f06e9df17cdf1ef14ee8a15ab08ed28e8d0ef5054ee135741560df2ec068";
+
 /// Default model directory: `~/.nihostt/models`
 pub fn default_model_dir() -> String {
     dirs::home_dir()
@@ -57,6 +64,33 @@ pub async fn ensure_model(model_dir: &str) -> anyhow::Result<()> {
         download_with_progress(&client, VAD_URL, &vad_path).await?;
     }
 
+    // Ensure speaker-embedding model for diarization
+    let speaker_path = dir.join(WESPEAKER_FILENAME);
+    if !speaker_path.exists() {
+        tracing::info!(
+            file = %WESPEAKER_FILENAME,
+            "downloading speaker embedding model (WeSpeaker ResNet34)…"
+        );
+        download_with_progress(&client, WESPEAKER_URL, &speaker_path).await?;
+    }
+    // Verify SHA-256 even if the file was already present (corrupted download guard).
+    if let Err(e) = verify_sha256(&speaker_path, WESPEAKER_SHA256).await {
+        tracing::warn!(
+            error = %e,
+            path = %speaker_path.display(),
+            "speaker model SHA-256 mismatch, removing corrupt file"
+        );
+        let _ = tokio::fs::remove_file(&speaker_path).await;
+        tracing::info!(
+            file = %WESPEAKER_FILENAME,
+            "re-downloading speaker embedding model…"
+        );
+        download_with_progress(&client, WESPEAKER_URL, &speaker_path).await?;
+        verify_sha256(&speaker_path, WESPEAKER_SHA256)
+            .await
+            .with_context(|| "re-downloaded speaker model still has bad SHA-256")?;
+    }
+
     Ok(())
 }
 
@@ -92,6 +126,24 @@ async fn download_with_progress(
 
     tracing::info!(path = %dest.display(), "download complete");
     Ok(())
+}
+
+/// Verify the SHA-256 hash of a file against an expected hex string.
+async fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
+    use sha2::Digest;
+    let bytes = tokio::fs::read(path)
+        .await
+        .with_context(|| format!("failed to read {} for SHA-256 check", path.display()))?;
+    let hash = sha2::Sha256::digest(&bytes);
+    let got = hex::encode(hash);
+    if got.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "SHA-256 mismatch for {}: expected {expected}, got {got}",
+            path.display()
+        )
+    }
 }
 
 #[cfg(test)]

@@ -1,343 +1,126 @@
-//! Speaker diarization: embedding extraction and online incremental clustering.
-//!
-//! This module provides [`SpeakerEncoder`] for ONNX-based speaker embedding
-//! extraction and [`SpeakerCluster`] for online incremental centroid clustering.
-//!
-//! # Feature gate
-//!
-//! This module is only available when the `diarization` feature is enabled.
-//! The encoder expects a WeSpeaker-style speaker embedding ONNX model (e.g.
-//! `wespeaker_resnet34.onnx`) placed in the model directory.
-
-#![cfg(feature = "diarization")]
-
-use anyhow::Context;
-use ort::session::Session;
-use ort::value::TensorRef;
 use std::path::Path;
-use std::sync::Mutex;
 
-/// Dimension of speaker embedding vectors.
-pub const EMBEDDING_DIM: usize = 256;
+use polyvoice::{DiarizationConfig, EcapaTdnnExtractor, OnlineDiarizer, SampleRate};
 
-/// Number of audio samples per segment (1.5 s at 16 kHz).
-pub const SEGMENT_SAMPLES: usize = 24000;
-
-/// Speaker encoder that extracts fixed-size embeddings from audio segments.
+/// Holds the online diarizer and its embedding extractor.
 ///
-/// Wraps a WeSpeaker ResNet34 ONNX session. Embeddings are L2-normalised so
-/// cosine similarity equals the dot product.
-///
-/// Thread-safe: the ONNX session is wrapped in a [`Mutex`].
-pub struct SpeakerEncoder {
-    session: Mutex<Session>,
+/// If no supported speaker-embedding model is present on disk this will be `None`
+/// and diarization is silently disabled (same behaviour as before).
+pub struct DiarizationState {
+    diarizer: OnlineDiarizer,
+    extractor: EcapaTdnnExtractor,
 }
 
-impl SpeakerEncoder {
-    /// Load the speaker encoder from `model_dir/wespeaker_resnet34.onnx`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the model file is missing or the ONNX session
-    /// cannot be created.
-    pub fn load(model_dir: &Path) -> anyhow::Result<Self> {
-        let path = model_dir.join("wespeaker_resnet34.onnx");
-        if !path.exists() {
-            anyhow::bail!(
-                "wespeaker_resnet34.onnx not found in {}",
-                model_dir.display()
-            );
+impl DiarizationState {
+    pub fn load(model_dir: &Path) -> Option<Self> {
+        // 1. Try ECAPA-TDNN first (modern default, 192-d embeddings).
+        let ecapa_path = model_dir.join("ecapa_tdnn.onnx");
+        if ecapa_path.exists() {
+            match Self::load_ecapa(&ecapa_path) {
+                Ok(state) => return Some(state),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        path = %ecapa_path.display(),
+                        "failed to load ecapa_tdnn.onnx"
+                    );
+                }
+            }
         }
-        let session = Session::builder()
-            .context("Failed to create ONNX session builder")?
-            .commit_from_file(&path)
-            .context("Failed to load speaker encoder model")?;
+
+        // 2. Fallback to legacy WeSpeaker ResNet34 (256-d embeddings).
+        let wespeaker_path = model_dir.join("wespeaker_resnet34.onnx");
+        if wespeaker_path.exists() {
+            match Self::load_wespeaker(&wespeaker_path) {
+                Ok(state) => return Some(state),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        path = %wespeaker_path.display(),
+                        "failed to load wespeaker_resnet34.onnx"
+                    );
+                }
+            }
+        }
+
+        tracing::info!(
+            "speaker embedding model not found (tried ecapa_tdnn.onnx, wespeaker_resnet34.onnx); \
+             diarization disabled"
+        );
+        None
+    }
+
+    fn load_ecapa(path: &Path) -> anyhow::Result<Self> {
+        // ECAPA-TDNN from SpeechBrain produces 192-d embeddings by default.
+        const EMBEDDING_DIM: usize = 192;
+        const POOL_SIZE: usize = 1;
+
+        let extractor = EcapaTdnnExtractor::new(path, EMBEDDING_DIM, POOL_SIZE)?;
+        let sample_rate = SampleRate::new(16000).expect("16000 is a valid sample rate");
+        let config = DiarizationConfig {
+            threshold: 0.25,
+            max_speakers: 4,
+            window_secs: 1.5,
+            hop_secs: 0.75,
+            min_speech_secs: 0.25,
+            max_gap_secs: 0.5,
+            sample_rate,
+        };
+        let diarizer = OnlineDiarizer::new(config);
+
         Ok(Self {
-            session: Mutex::new(session),
+            diarizer,
+            extractor,
         })
     }
 
-    /// Extract an L2-normalised speaker embedding from raw 16 kHz f32 samples.
-    ///
-    /// The input is padded with zeros or truncated to exactly [`SEGMENT_SAMPLES`]
-    /// before inference. The returned array has length [`EMBEDDING_DIM`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if ONNX inference fails or the output tensor cannot be
-    /// extracted.
-    pub fn extract_embedding(&self, samples: &[f32]) -> anyhow::Result<[f32; EMBEDDING_DIM]> {
-        let mut buf = [0.0f32; SEGMENT_SAMPLES];
-        let copy_len = samples.len().min(SEGMENT_SAMPLES);
-        buf[..copy_len].copy_from_slice(&samples[..copy_len]);
+    fn load_wespeaker(path: &Path) -> anyhow::Result<Self> {
+        // WeSpeaker ResNet34: 256-d embeddings, fbank input (same as ECAPA).
+        const EMBEDDING_DIM: usize = 256;
+        const POOL_SIZE: usize = 1;
 
-        let input_tensor =
-            TensorRef::from_array_view(([1_usize, SEGMENT_SAMPLES], buf.as_slice()))?;
+        let extractor = EcapaTdnnExtractor::new(path, EMBEDDING_DIM, POOL_SIZE)?;
+        let sample_rate = SampleRate::new(16000).expect("16000 is a valid sample rate");
+        let config = DiarizationConfig {
+            threshold: 0.25,
+            max_speakers: 4,
+            window_secs: 1.5,
+            hop_secs: 0.75,
+            min_speech_secs: 0.25,
+            max_gap_secs: 0.5,
+            sample_rate,
+        };
+        let diarizer = OnlineDiarizer::new(config);
 
-        let mut session = self.session.lock().unwrap_or_else(|e| {
-            tracing::warn!("SpeakerEncoder session mutex was poisoned, recovering");
-            e.into_inner()
-        });
-        let outputs = session
-            .run(ort::inputs![input_tensor])
-            .context("SpeakerEncoder inference failed")?;
+        Ok(Self {
+            diarizer,
+            extractor,
+        })
+    }
 
-        let (_shape, data) = outputs[0]
-            .try_extract_tensor::<f32>()
-            .context("Failed to extract speaker embedding tensor")?;
+    /// Feed a chunk of 16 kHz mono f32 audio into the online diarizer.
+    pub fn feed(&mut self, samples: &[f32]) {
+        // `feed` returns completed segments; we are only interested in
+        // `current_speaker()` which is updated after every internal window.
+        if let Err(e) = self.diarizer.feed(samples, &self.extractor) {
+            tracing::warn!(error = %e, "diarizer feed failed");
+        }
+    }
 
-        anyhow::ensure!(
-            data.len() >= EMBEDDING_DIM,
-            "Expected embedding dim >= {}, got {}",
-            EMBEDDING_DIM,
-            data.len()
-        );
+    /// Return the currently active speaker ID, if any.
+    pub fn current_speaker(&self) -> Option<u32> {
+        self.diarizer.current_speaker().map(|s| s.0)
+    }
 
-        let mut embedding = [0.0f32; EMBEDDING_DIM];
-        embedding.copy_from_slice(&data[..EMBEDDING_DIM]);
-
-        let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 1e-8 {
-            for v in &mut embedding {
-                *v /= norm;
+    /// Flush any trailing audio and return the final segment.
+    pub fn flush(&mut self) -> Option<u32> {
+        match self.diarizer.flush(&self.extractor) {
+            Ok(Some(_seg)) => self.diarizer.current_speaker().map(|s| s.0),
+            Ok(None) => self.diarizer.current_speaker().map(|s| s.0),
+            Err(e) => {
+                tracing::warn!(error = %e, "diarizer flush failed");
+                self.diarizer.current_speaker().map(|s| s.0)
             }
         }
-
-        Ok(embedding)
-    }
-}
-
-/// Cosine similarity threshold for assigning an embedding to an existing speaker.
-const COSINE_THRESHOLD: f32 = 0.5;
-
-/// Maximum number of distinct speaker identities tracked by [`SpeakerCluster`].
-const MAX_SPEAKERS: usize = 64;
-
-/// Online incremental speaker clustering.
-///
-/// Maintains a set of speaker centroids and assigns incoming embeddings to the
-/// nearest centroid (if above the configured threshold) or creates a new speaker.
-/// Centroids are updated via running average after each assignment.
-pub struct SpeakerCluster {
-    centroids: Vec<[f32; EMBEDDING_DIM]>,
-    counts: Vec<usize>,
-    threshold: f32,
-}
-
-impl SpeakerCluster {
-    /// Create an empty cluster with no known speakers using the default threshold.
-    pub fn new() -> Self {
-        Self::with_threshold(COSINE_THRESHOLD)
-    }
-
-    /// Create an empty cluster with a custom cosine similarity threshold.
-    pub fn with_threshold(threshold: f32) -> Self {
-        Self {
-            centroids: Vec::new(),
-            counts: Vec::new(),
-            threshold,
-        }
-    }
-
-    /// Assign an embedding to a speaker ID.
-    ///
-    /// Computes cosine similarity against all known centroids. If the best match
-    /// exceeds the configured threshold, the centroid is updated via running average
-    /// and the corresponding speaker ID is returned. Otherwise, a new speaker is
-    /// registered and its ID (index) is returned.
-    ///
-    /// When [`MAX_SPEAKERS`] is reached, the embedding is always assigned to the
-    /// closest existing centroid.
-    pub fn assign(&mut self, embedding: &[f32; EMBEDDING_DIM]) -> u32 {
-        let mut best_id: Option<usize> = None;
-        let mut best_sim = f32::NEG_INFINITY;
-
-        for (i, centroid) in self.centroids.iter().enumerate() {
-            let sim = cosine_similarity(embedding, centroid);
-            if sim > best_sim {
-                best_sim = sim;
-                best_id = Some(i);
-            }
-        }
-
-        // At speaker limit — assign to closest centroid regardless of threshold
-        if self.centroids.len() >= MAX_SPEAKERS {
-            let id = best_id.unwrap_or(0);
-            update_centroid(&mut self.centroids[id], embedding, self.counts[id]);
-            self.counts[id] += 1;
-            return id as u32;
-        }
-
-        if let Some(id) = best_id
-            && best_sim > self.threshold
-        {
-            update_centroid(&mut self.centroids[id], embedding, self.counts[id]);
-            self.counts[id] += 1;
-            return id as u32;
-        }
-
-        // New speaker
-        self.centroids.push(*embedding);
-        self.counts.push(1);
-        (self.centroids.len() - 1) as u32
-    }
-
-    /// Return the number of distinct speakers seen so far.
-    pub fn num_speakers(&self) -> usize {
-        self.centroids.len()
-    }
-}
-
-impl Default for SpeakerCluster {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-fn update_centroid(
-    centroid: &mut [f32; EMBEDDING_DIM],
-    embedding: &[f32; EMBEDDING_DIM],
-    count: usize,
-) {
-    let n = count as f32;
-    for (c, &e) in centroid.iter_mut().zip(embedding.iter()) {
-        *c = (*c * n + e) / (n + 1.0);
-    }
-    let norm: f32 = centroid.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 1e-8 {
-        for x in centroid {
-            *x /= norm;
-        }
-    }
-}
-
-/// Compute cosine similarity between two fixed-size embedding vectors.
-///
-/// Returns a value in `[-1.0, 1.0]`. Returns `0.0` if either vector is zero.
-pub fn cosine_similarity(a: &[f32; EMBEDDING_DIM], b: &[f32; EMBEDDING_DIM]) -> f32 {
-    let dot: f32 = a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|&x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|&x| x * x).sum::<f32>().sqrt();
-    if norm_a < 1e-8 || norm_b < 1e-8 {
-        return 0.0;
-    }
-    dot / (norm_a * norm_b)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_embedding(value: f32) -> [f32; EMBEDDING_DIM] {
-        [value; EMBEDDING_DIM]
-    }
-
-    fn make_unit_embedding(index: usize) -> [f32; EMBEDDING_DIM] {
-        let mut emb = [0.0f32; EMBEDDING_DIM];
-        emb[index] = 1.0;
-        emb
-    }
-
-    #[test]
-    fn test_cosine_similarity_identical() {
-        let a = make_embedding(1.0);
-        let sim = cosine_similarity(&a, &a);
-        assert!((sim - 1.0).abs() < 1e-5, "expected ~1.0, got {sim}");
-    }
-
-    #[test]
-    fn test_cosine_similarity_orthogonal() {
-        let a = make_unit_embedding(0);
-        let b = make_unit_embedding(1);
-        let sim = cosine_similarity(&a, &b);
-        assert!(sim.abs() < 1e-5, "expected ~0.0, got {sim}");
-    }
-
-    #[test]
-    fn test_cosine_similarity_opposite() {
-        let a = make_embedding(1.0);
-        let b = make_embedding(-1.0);
-        let sim = cosine_similarity(&a, &b);
-        assert!((sim + 1.0).abs() < 1e-5, "expected ~-1.0, got {sim}");
-    }
-
-    #[test]
-    fn test_cluster_new_speaker() {
-        let mut cluster = SpeakerCluster::new();
-        let emb = make_embedding(1.0);
-        let id = cluster.assign(&emb);
-        assert_eq!(id, 0, "first speaker should be ID 0");
-        assert_eq!(cluster.num_speakers(), 1);
-    }
-
-    #[test]
-    fn test_cluster_same_speaker() {
-        let mut cluster = SpeakerCluster::new();
-        let emb_a = make_embedding(1.0);
-        let mut emb_b = make_embedding(1.0);
-        emb_b[0] = 1.001;
-
-        let id1 = cluster.assign(&emb_a);
-        let id2 = cluster.assign(&emb_b);
-        assert_eq!(
-            id1, id2,
-            "similar embeddings should map to the same speaker"
-        );
-        assert_eq!(cluster.num_speakers(), 1);
-    }
-
-    #[test]
-    fn test_cluster_different_speakers() {
-        let mut cluster = SpeakerCluster::new();
-        let emb_a = make_unit_embedding(0);
-        let emb_b = make_unit_embedding(1);
-
-        let id1 = cluster.assign(&emb_a);
-        let id2 = cluster.assign(&emb_b);
-        assert_ne!(
-            id1, id2,
-            "orthogonal embeddings should be different speakers"
-        );
-        assert_eq!(cluster.num_speakers(), 2);
-    }
-
-    #[test]
-    fn test_cluster_three_speakers() {
-        let mut cluster = SpeakerCluster::new();
-        let emb_a = make_unit_embedding(0);
-        let emb_b = make_unit_embedding(1);
-        let emb_c = make_unit_embedding(2);
-
-        let id_a1 = cluster.assign(&emb_a);
-        let id_b = cluster.assign(&emb_b);
-        let id_c = cluster.assign(&emb_c);
-        let id_a2 = cluster.assign(&emb_a);
-
-        assert_eq!(id_a1, 0);
-        assert_eq!(id_b, 1);
-        assert_eq!(id_c, 2);
-        assert_eq!(
-            id_a2, id_a1,
-            "returning to speaker A should yield the same ID"
-        );
-        assert_eq!(cluster.num_speakers(), 3);
-    }
-
-    #[test]
-    fn test_embedding_dim_constant() {
-        assert_eq!(EMBEDDING_DIM, 256);
-    }
-
-    #[test]
-    fn test_segment_samples_constant() {
-        assert_eq!(SEGMENT_SAMPLES, 24000);
-    }
-
-    #[test]
-    fn test_load_returns_error_for_missing_file() {
-        let result = SpeakerEncoder::load(Path::new("/nonexistent/path"));
-        assert!(result.is_err());
-        let msg = format!("{}", result.err().unwrap());
-        assert!(msg.contains("wespeaker_resnet34.onnx"));
     }
 }

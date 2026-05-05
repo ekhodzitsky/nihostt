@@ -116,3 +116,89 @@ async fn test_ws_audio_chunks_receives_final() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 3. Diarization smoke test (only when diarization feature is enabled)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "diarization")]
+#[tokio::test]
+#[ignore] // Requires model download + diarization feature
+async fn test_ws_diarization_returns_speaker_id() {
+    let port = common::start_server().await;
+
+    let (ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/v1/ws"))
+        .await
+        .expect("WebSocket connection failed");
+    let (mut sink, mut stream) = ws.split();
+
+    // Receive Ready
+    let msg = tokio::time::timeout(Duration::from_secs(10), stream.next())
+        .await
+        .expect("timeout waiting for Ready")
+        .expect("stream ended")
+        .expect("ws error");
+    let text = msg.into_text().expect("expected text message");
+    let ready: serde_json::Value = serde_json::from_str(&text).expect("expected JSON");
+    assert_eq!(ready["type"], "ready");
+
+    // Configure sample rate to match fixture
+    sink.send(Message::Text(
+        serde_json::to_string(&serde_json::json!({"type": "configure", "sample_rate": 16000}))
+            .unwrap()
+            .into(),
+    ))
+    .await
+    .expect("failed to send configure");
+
+    // Send actual speech audio from fixture (mono PCM16 @ 16kHz, ~3s)
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tatoeba/80461.wav");
+    let audio = common::wav_to_pcm16(&fixture);
+    sink.send(Message::Binary(audio.into()))
+        .await
+        .expect("failed to send audio");
+
+    // Send Stop
+    sink.send(Message::Text(
+        serde_json::to_string(&serde_json::json!({"type": "stop"}))
+            .unwrap()
+            .into(),
+    ))
+    .await
+    .expect("failed to send stop");
+
+    // Wait for Final and verify speaker_id is present (Some or None is fine,
+    // but the field must exist when diarization is compiled in).
+    loop {
+        let msg = tokio::time::timeout(Duration::from_secs(30), stream.next())
+            .await
+            .expect("timeout waiting for message")
+            .expect("stream ended")
+            .expect("ws error");
+
+        match msg {
+            Message::Text(text) => {
+                let v: serde_json::Value = serde_json::from_str(&text).expect("expected JSON");
+                match v["type"].as_str().unwrap_or("") {
+                    "partial" => continue,
+                    "final" => {
+                        assert!(
+                            v["text"].is_string(),
+                            "Final message should have a text field"
+                        );
+                        // When diarization is enabled, speaker_id must be present
+                        // (even if the value is null for very short segments).
+                        assert!(
+                            v.as_object().unwrap().contains_key("speaker_id"),
+                            "Final message should contain speaker_id when diarization is enabled"
+                        );
+                        break;
+                    }
+                    other => panic!("Unexpected message type: {other}, full: {text}"),
+                }
+            }
+            _ => continue,
+        }
+    }
+}

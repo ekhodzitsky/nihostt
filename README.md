@@ -64,7 +64,7 @@ const ws = new WebSocket('ws://127.0.0.1:9876/v1/ws');
 ws.onmessage = (event) => {
   const msg = JSON.parse(event.data);
   if (msg.type === 'partial') console.log('partial:', msg.text);
-  if (msg.type === 'final')   console.log('final:  ', msg.text);
+  if (msg.type === 'final')   console.log('final:  ', msg.text, 'speaker:', msg.speaker_id);
 };
 
 ws.onopen = () => {
@@ -171,6 +171,29 @@ cargo ndk -t arm64-v8a -o ./android/app/src/main/jniLibs \
 
 See [`ANDROID.md`](ANDROID.md) for full integration guide.
 
+## Speaker Diarization
+
+Identify **who spoke when** in multi-speaker audio. Enabled via the `diarization` Cargo feature.
+
+```bash
+# Build with diarization support
+cargo build --release --features diarization
+
+# Download models (includes WeSpeaker ResNet34 ONNX automatically)
+./target/release/nihostt download
+
+# Start server — speaker_id appears in WebSocket/SSE Final messages
+./target/release/nihostt serve
+```
+
+When diarization is enabled, every `final` transcript includes a `speaker_id` field:
+
+```json
+{"type":"final","text":"こんにちは","speaker_id":0}
+```
+
+The speaker embedding model (~26 MB, WeSpeaker ResNet34) is auto-downloaded on first run. You can also place a custom `ecapa_tdnn.onnx` in `~/.nihostt/models/` — it will be used in priority if present.
+
 ## Model
 
 | File | Size | Description |
@@ -179,8 +202,11 @@ See [`ANDROID.md`](ANDROID.md) for full integration guide.
 | `decoder-epoch-99-avg-1.onnx` | ~4.4 MB | LSTM decoder |
 | `joiner-epoch-99-avg-1.onnx` | ~2.6 MB | RNN-T joiner |
 | `tokens.txt` | ~46 KB | BPE vocabulary (5224 tokens) |
+| `wespeaker_resnet34.onnx`¹ | ~26 MB | Speaker embedding (diarization) |
 
-Auto-downloaded from [HuggingFace](https://huggingface.co/reazon-research/reazonspeech-k2-v2) on first run.
+¹ Auto-downloaded with `nihostt download` when built with `--features diarization`.
+
+Base models are from [HuggingFace](https://huggingface.co/reazon-research/reazonspeech-k2-v2).
 
 ## Contributing
 

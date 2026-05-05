@@ -16,7 +16,7 @@ default = ["server"]
 server = ["dep:axum", "dep:tokio-stream", "dep:tokio-util"]
 coreml = ["ort/coreml"]
 cuda = ["ort/cuda"]
-diarization = []
+diarization = ["dep:polyvoice"]
 ffi = ["ort/nnapi"]
 
 [dependencies]
@@ -57,6 +57,9 @@ rustfft = "6"
 
 # N-dimensional arrays for ONNX tensor manipulation
 ndarray = "0.16"
+
+# Speaker diarization (optional)
+polyvoice = { version = "0.4.3", features = ["onnx"], optional = true }
 
 # High-quality audio resampling
 rubato = "0.16"

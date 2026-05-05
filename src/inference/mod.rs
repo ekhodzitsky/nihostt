@@ -280,9 +280,7 @@ pub struct StreamingSession {
     /// Sample index of the last partial emission.
     last_partial_at: usize,
     #[cfg(feature = "diarization")]
-    speaker_encoder: Option<diarization::SpeakerEncoder>,
-    #[cfg(feature = "diarization")]
-    speaker_cluster: diarization::SpeakerCluster,
+    diarization_state: Option<diarization::DiarizationState>,
 }
 
 impl StreamingSession {
@@ -290,9 +288,7 @@ impl StreamingSession {
         let vad = vad::SileroVad::new(&model_dir.join("silero_vad.onnx"))
             .expect("failed to load VAD model");
         #[cfg(feature = "diarization")]
-        let speaker_encoder = diarization::SpeakerEncoder::load(&model_dir).ok();
-        #[cfg(feature = "diarization")]
-        let speaker_cluster = diarization::SpeakerCluster::new();
+        let diarization_state = diarization::DiarizationState::load(&model_dir);
         Self {
             tokens,
             vad,
@@ -304,9 +300,7 @@ impl StreamingSession {
             silence_start_sample: None,
             last_partial_at: 0,
             #[cfg(feature = "diarization")]
-            speaker_encoder,
-            #[cfg(feature = "diarization")]
-            speaker_cluster,
+            diarization_state,
         }
     }
 
@@ -319,6 +313,10 @@ impl StreamingSession {
         session: &mut PooledSession,
     ) -> anyhow::Result<Vec<ProcessResult>> {
         self.audio_buffer.extend_from_slice(chunk);
+        #[cfg(feature = "diarization")]
+        if let Some(ref mut state) = self.diarization_state {
+            state.feed(chunk);
+        }
         let mut results = Vec::new();
 
         while self.vad_processed + VAD_FRAME_SAMPLES <= self.audio_buffer.len() {
@@ -450,6 +448,12 @@ impl StreamingSession {
             }
         }
 
+        // Flush the diarizer so that any trailing partial window is processed.
+        #[cfg(feature = "diarization")]
+        if let Some(ref mut state) = self.diarization_state {
+            let _ = state.flush();
+        }
+
         Ok(results)
     }
 
@@ -489,17 +493,11 @@ impl StreamingSession {
     /// Extract a speaker ID for the current speech segment.
     #[cfg(feature = "diarization")]
     fn extract_speaker_id(&mut self) -> Option<u32> {
-        let encoder = self.speaker_encoder.as_ref()?;
-        let start = self.speech_start_sample.saturating_sub(PAD_SAMPLES);
-        let end = (self.last_speech_sample + PAD_SAMPLES).min(self.audio_buffer.len());
-        let segment = &self.audio_buffer[start..end];
-
-        let mut buf = [0.0f32; diarization::SEGMENT_SAMPLES];
-        let copy_len = segment.len().min(diarization::SEGMENT_SAMPLES);
-        buf[..copy_len].copy_from_slice(&segment[..copy_len]);
-
-        let embedding = encoder.extract_embedding(&buf).ok()?;
-        Some(self.speaker_cluster.assign(&embedding))
+        let speaker = self.diarization_state.as_ref()?.current_speaker();
+        if speaker.is_none() {
+            tracing::debug!("speaker_id not available yet (segment shorter than diarizer window)");
+        }
+        speaker
     }
 
     /// No-op fallback when diarization feature is disabled.
