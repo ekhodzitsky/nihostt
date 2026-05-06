@@ -169,11 +169,11 @@ cargo build --release
 ```bash
 # CPU (any platform)
 docker build -t nihostt .
-docker run -p 9876:9876 nihostt
+docker run -e NIHOSTT_API_KEYS="$(openssl rand -hex 32)" -p 9876:9876 nihostt
 
 # CUDA (Linux, requires NVIDIA Container Toolkit)
 docker build -f Dockerfile.cuda -t nihostt-cuda .
-docker run --gpus all -p 9876:9876 nihostt-cuda
+docker run --gpus all -e NIHOSTT_API_KEYS="$(openssl rand -hex 32)" -p 9876:9876 nihostt-cuda
 
 # Baked image (model included at build time, ~350 MB)
 docker build --build-arg NIHOSTT_BAKE_MODEL=1 -t nihostt:baked .
@@ -182,6 +182,7 @@ docker build --build-arg NIHOSTT_BAKE_MODEL=1 -t nihostt:baked .
 ### Kubernetes
 
 ```bash
+kubectl create secret generic nihostt-api --from-literal=api-keys="$(openssl rand -hex 32)"
 kubectl apply -f k8s/
 ```
 
@@ -200,6 +201,10 @@ Includes:
 | `POST` | `/v1/transcribe` | Upload audio file, get JSON transcript with optional `confidence` |
 | `POST` | `/v1/transcribe/stream` | Upload audio file, get SSE stream |
 | `WS` | `/v1/ws` | Real-time streaming with partial/final |
+
+When `NIHOSTT_API_KEYS` / `--api-key` is configured, send either
+`Authorization: Bearer <key>` or `x-api-key: <key>` for `/v1/*` and `/metrics`.
+`/health` and `/ready` stay unauthenticated for orchestrator probes.
 
 See [`docs/openapi.yaml`](docs/openapi.yaml) for REST/SSE spec and [`docs/asyncapi.yaml`](docs/asyncapi.yaml) for WebSocket protocol. Full CLI reference is in [`docs/cli.md`](docs/cli.md).
 
@@ -257,6 +262,8 @@ fresh copy before serving requests.
 ## Production Defaults
 
 - Server binds `127.0.0.1` by default. Use `--bind-all --host 0.0.0.0` only behind Docker, a reverse proxy, or a trusted network boundary.
+- Non-loopback binds fail closed unless `NIHOSTT_API_KEYS` / `--api-key` is set. Use `--allow-unauthenticated-public` only behind an already-authenticated private boundary.
+- API-key auth protects `/v1/*` and `/metrics`; `/health` and `/ready` remain open for probes.
 - Browser cross-origin requests are denied unless the origin is loopback, listed with `--allow-origin`, or `--cors-allow-any` is set.
 - Per-IP rate limiting is on by default: `--rate-limit-per-minute 60`, `--rate-limit-burst 10`. Set the rate to `0` to disable it.
 - `/health`, `/ready`, and `/metrics` are exempt from rate limiting so probes keep working under load.

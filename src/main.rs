@@ -1,6 +1,6 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use nihostt::server::{OriginPolicy, RuntimeLimits, ServerConfig};
+use nihostt::server::{AuthConfig, OriginPolicy, RuntimeLimits, ServerConfig};
 use nihostt::{inference, model, server};
 use std::net::IpAddr;
 use std::path::Path;
@@ -53,6 +53,25 @@ enum Commands {
         /// Echo `Access-Control-Allow-Origin: *` and accept any cross-origin caller.
         #[arg(long, default_value_t = false)]
         cors_allow_any: bool,
+
+        /// API key allowed to call `/v1/*` and `/metrics` (repeatable). The
+        /// `NIHOSTT_API_KEYS` env var accepts a comma-separated list.
+        #[arg(
+            long = "api-key",
+            env = "NIHOSTT_API_KEYS",
+            value_delimiter = ',',
+            value_name = "KEY"
+        )]
+        api_keys: Vec<String>,
+
+        /// Permit non-loopback bind without API keys. Only use behind an
+        /// already-authenticated private network boundary.
+        #[arg(
+            long,
+            env = "NIHOSTT_ALLOW_UNAUTHENTICATED_PUBLIC",
+            default_value_t = false
+        )]
+        allow_unauthenticated_public: bool,
 
         /// WebSocket idle timeout (seconds).
         #[arg(long, env = "NIHOSTT_IDLE_TIMEOUT_SECS", default_value_t = 300)]
@@ -173,6 +192,40 @@ fn ensure_bind_allowed(host: &str, bind_all_flag: bool) -> anyhow::Result<()> {
     )
 }
 
+fn normalize_api_keys(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn ensure_auth_allowed(
+    host: &str,
+    api_keys: &[String],
+    allow_unauthenticated_public: bool,
+) -> anyhow::Result<()> {
+    if is_loopback_host(host) || !api_keys.is_empty() {
+        return Ok(());
+    }
+
+    if allow_unauthenticated_public {
+        tracing::warn!(
+            host = %host,
+            "serving a non-loopback address without built-in API-key auth"
+        );
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "refusing to serve unauthenticated public API on '{host}': set \
+         NIHOSTT_API_KEYS (or repeat `--api-key`) before using `--bind-all`; \
+         use --allow-unauthenticated-public only behind an authenticated private boundary"
+    )
+}
+
 fn is_loopback_host(host: &str) -> bool {
     let lowered = host.trim().to_ascii_lowercase();
     if lowered == "localhost" || lowered == "::1" {
@@ -283,6 +336,8 @@ async fn main() -> anyhow::Result<()> {
             bind_all,
             allow_origin,
             cors_allow_any,
+            api_keys,
+            allow_unauthenticated_public,
             idle_timeout_secs,
             ws_frame_max_bytes,
             body_limit_bytes,
@@ -295,6 +350,8 @@ async fn main() -> anyhow::Result<()> {
             skip_quantize,
         } => {
             ensure_bind_allowed(&host, bind_all)?;
+            let api_keys = normalize_api_keys(&api_keys);
+            ensure_auth_allowed(&host, &api_keys, allow_unauthenticated_public)?;
             model::ensure_model(&model_dir).await?;
             ensure_int8_encoder(&model_dir, skip_quantize, false).await?;
             let engine = inference::Engine::load_with_pool_size(&model_dir, pool_size)?;
@@ -306,6 +363,7 @@ async fn main() -> anyhow::Result<()> {
                     allow_any: cors_allow_any,
                     allowed_origins: allow_origin,
                 },
+                auth: AuthConfig { api_keys },
                 limits: RuntimeLimits {
                     idle_timeout_secs,
                     ws_frame_max_bytes,
@@ -389,5 +447,42 @@ mod tests {
     #[test]
     fn test_ensure_bind_allowed_explicit_flag_ok() {
         ensure_bind_allowed("0.0.0.0", true).expect("explicit --bind-all must pass");
+    }
+
+    #[test]
+    fn test_normalize_api_keys_trims_and_splits_values() {
+        let keys = normalize_api_keys(&[
+            " first , second ".to_string(),
+            "".to_string(),
+            "third".to_string(),
+        ]);
+
+        assert_eq!(keys, vec!["first", "second", "third"]);
+    }
+
+    #[test]
+    fn test_ensure_auth_allowed_loopback_without_key_ok() {
+        ensure_auth_allowed("127.0.0.1", &[], false).expect("loopback dev must not require auth");
+    }
+
+    #[test]
+    fn test_ensure_auth_allowed_public_requires_key() {
+        let result = ensure_auth_allowed("0.0.0.0", &[], false);
+        assert!(
+            result.is_err(),
+            "public bind without API keys must fail closed"
+        );
+    }
+
+    #[test]
+    fn test_ensure_auth_allowed_public_with_key_ok() {
+        ensure_auth_allowed("0.0.0.0", &["secret-key".to_string()], false)
+            .expect("public bind with API key must pass");
+    }
+
+    #[test]
+    fn test_ensure_auth_allowed_public_override_ok() {
+        ensure_auth_allowed("0.0.0.0", &[], true)
+            .expect("explicit unauthenticated public override must pass");
     }
 }

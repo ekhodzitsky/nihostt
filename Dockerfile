@@ -85,7 +85,8 @@ EXPOSE 9876
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:9876/health || exit 1
 
-# Download model if not present, then start server.
+# Download model if not present, then start server. Container/public binds
+# require NIHOSTT_API_KEYS unless --allow-unauthenticated-public is explicit.
 # `--bind-all` acknowledges that container networking requires listening on
 # 0.0.0.0; outside Docker the default `127.0.0.1` bind stays in effect.
 ENTRYPOINT ["nihostt"]

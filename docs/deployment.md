@@ -6,25 +6,36 @@
 
 ```bash
 docker build -t nihostt .
-docker run -p 9876:9876 -v ~/.nihostt/models:/home/nihostt/.nihostt/models nihostt
+docker run \
+  -e NIHOSTT_API_KEYS="$(openssl rand -hex 32)" \
+  -p 9876:9876 \
+  -v ~/.nihostt/models:/home/nihostt/.nihostt/models \
+  nihostt
 ```
 
 ### CUDA (Linux + NVIDIA)
 
 ```bash
 docker build -f Dockerfile.cuda -t nihostt:cuda .
-docker run --gpus all -p 9876:9876 -v ~/.nihostt/models:/home/nihostt/.nihostt/models nihostt:cuda
+docker run \
+  --gpus all \
+  -e NIHOSTT_API_KEYS="$(openssl rand -hex 32)" \
+  -p 9876:9876 \
+  -v ~/.nihostt/models:/home/nihostt/.nihostt/models \
+  nihostt:cuda
 ```
 
 ### Pre-built image with model baked in
 
 ```bash
 docker build --build-arg NIHOSTT_BAKE_MODEL=1 -t nihostt:baked .
-docker run -p 9876:9876 nihostt:baked
+docker run -e NIHOSTT_API_KEYS="$(openssl rand -hex 32)" -p 9876:9876 nihostt:baked
 ```
 
 The container runs as UID/GID `10001` with `HOME=/home/nihostt`, so persistent
 model-cache mounts must target `/home/nihostt/.nihostt/models`.
+Container binds use `0.0.0.0`; nihostt fails closed unless `NIHOSTT_API_KEYS`
+is set or `--allow-unauthenticated-public` is explicitly passed.
 
 ## systemd Service
 
@@ -41,12 +52,16 @@ User=nihostt
 ExecStart=/usr/local/bin/nihostt serve --bind-all --host 0.0.0.0 --port 9876 --allow-origin https://stt.example.com --metrics
 Restart=on-failure
 Environment="RUST_LOG=nihostt=info"
+EnvironmentFile=/etc/nihostt/nihostt.env
 
 [Install]
 WantedBy=multi-user.target
 ```
 
 ```bash
+sudo install -d -m 0700 -o root -g root /etc/nihostt
+printf 'NIHOSTT_API_KEYS=%s\n' "$(openssl rand -hex 32)" | sudo tee /etc/nihostt/nihostt.env >/dev/null
+sudo chmod 0600 /etc/nihostt/nihostt.env
 sudo systemctl enable --now nihostt
 ```
 
@@ -79,6 +94,8 @@ Use `--trust-proxy` only when the reverse proxy is trusted to set
 | Variable | CLI Flag | Default |
 |---|---|---|
 | `NIHOSTT_ALLOW_BIND_ANY` | `--bind-all` | — |
+| `NIHOSTT_API_KEYS` | `--api-key` | empty |
+| `NIHOSTT_ALLOW_UNAUTHENTICATED_PUBLIC` | `--allow-unauthenticated-public` | false |
 | `NIHOSTT_IDLE_TIMEOUT_SECS` | `--idle-timeout-secs` | 300 |
 | `NIHOSTT_WS_FRAME_MAX_BYTES` | `--ws-frame-max-bytes` | 524288 |
 | `NIHOSTT_BODY_LIMIT_BYTES` | `--body-limit-bytes` | 52428800 |
@@ -93,3 +110,6 @@ Use `--trust-proxy` only when the reverse proxy is trusted to set
 `--allow-origin` is repeatable and currently has no environment-variable alias.
 Loopback origins are always allowed. `--cors-allow-any` disables origin
 restriction and should only be used behind a trusted boundary.
+When `NIHOSTT_API_KEYS` is set, clients must send `Authorization: Bearer <key>`
+or `x-api-key: <key>` for `/v1/*` and `/metrics`; `/health` and `/ready` stay
+open for orchestrator probes.

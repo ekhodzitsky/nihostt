@@ -70,6 +70,9 @@ paths:
       summary: Prometheus metrics
       operationId: prometheusMetrics
       description: Available only when the server is started with `--metrics`.
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       responses:
         '200':
           description: Prometheus text exposition
@@ -84,10 +87,15 @@ paths:
                   # HELP nihostt_pool_ready Whether at least one inference session is available.
                   # TYPE nihostt_pool_ready gauge
                   nihostt_pool_ready 1
+        '401':
+          description: API key missing or invalid when auth is enabled
   /v1/transcribe:
     post:
       summary: Transcribe an audio file
       operationId: transcribeFile
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       requestBody:
         required: true
         content:
@@ -122,6 +130,8 @@ paths:
                     example: 0.92
         '413':
           description: File too large
+        '401':
+          description: API key missing or invalid when auth is enabled
         '429':
           description: Rate limit exceeded
           headers:
@@ -140,6 +150,9 @@ paths:
     post:
       summary: Stream transcription via SSE
       operationId: transcribeStream
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       requestBody:
         required: true
         content:
@@ -157,6 +170,8 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        '401':
+          description: API key missing or invalid when auth is enabled
   /v1/ws:
     get:
       summary: WebSocket streaming endpoint
@@ -171,10 +186,25 @@ paths:
         5. Server sends `{"type":"final","text":"..."}` on silence / stop
         6. Client sends `{"type":"stop"}` to force finalization
       operationId: websocketStream
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
       responses:
         '101':
           description: WebSocket upgrade successful
+        '401':
+          description: API key missing or invalid when auth is enabled
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: "Optional API-key auth via `Authorization: Bearer <key>`."
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: "Optional API-key auth via `x-api-key: <key>`."
   schemas:
     ServerMessage:
       type: object

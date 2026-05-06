@@ -176,11 +176,11 @@ RUST_LOG=nihostt=debug cargo run -- serve
 ```sh
 # CPU (any platform)
 docker build -t nihostt .
-docker run -p 9876:9876 nihostt
+docker run -e NIHOSTT_API_KEYS="$(openssl rand -hex 32)" -p 9876:9876 nihostt
 
 # CUDA (Linux, requires NVIDIA Container Toolkit)
 docker build -f Dockerfile.cuda -t nihostt-cuda .
-docker run --gpus all -p 9876:9876 nihostt-cuda
+docker run --gpus all -e NIHOSTT_API_KEYS="$(openssl rand -hex 32)" -p 9876:9876 nihostt-cuda
 
 # Baked image (model included at build time, ~350 MB)
 docker build --build-arg NIHOSTT_BAKE_MODEL=1 -t nihostt:baked .
@@ -188,12 +188,15 @@ docker build --build-arg NIHOSTT_BAKE_MODEL=1 -t nihostt:baked .
 
 Docker images run with `--bind-all --host 0.0.0.0` because container networking
 requires listening on all interfaces. The non-Docker default is `127.0.0.1`.
+Container/public binds fail closed unless `NIHOSTT_API_KEYS` / `--api-key` is set.
 
 ## Environment Variables
 
 | Env var | CLI flag | Default |
 |---|---|---|
 | `NIHOSTT_ALLOW_BIND_ANY` | `--bind-all` | false |
+| `NIHOSTT_API_KEYS` | `--api-key` | empty |
+| `NIHOSTT_ALLOW_UNAUTHENTICATED_PUBLIC` | `--allow-unauthenticated-public` | false |
 | `NIHOSTT_IDLE_TIMEOUT_SECS` | `--idle-timeout-secs` | 300 |
 | `NIHOSTT_WS_FRAME_MAX_BYTES` | `--ws-frame-max-bytes` | 524288 |
 | `NIHOSTT_BODY_LIMIT_BYTES` | `--body-limit-bytes` | 52428800 |

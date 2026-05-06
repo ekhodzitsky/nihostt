@@ -18,11 +18,20 @@ sudo mv nihostt /usr/local/bin/
 ```sh
 # CPU (any platform)
 docker build -t nihostt .
-docker run -p 9876:9876 -v ~/.nihostt/models:/home/nihostt/.nihostt/models nihostt
+docker run \
+  -e NIHOSTT_API_KEYS="$(openssl rand -hex 32)" \
+  -p 9876:9876 \
+  -v ~/.nihostt/models:/home/nihostt/.nihostt/models \
+  nihostt
 
 # CUDA (Linux, requires NVIDIA Container Toolkit)
 docker build -f Dockerfile.cuda -t nihostt:cuda .
-docker run --gpus all -p 9876:9876 -v ~/.nihostt/models:/home/nihostt/.nihostt/models nihostt:cuda
+docker run \
+  --gpus all \
+  -e NIHOSTT_API_KEYS="$(openssl rand -hex 32)" \
+  -p 9876:9876 \
+  -v ~/.nihostt/models:/home/nihostt/.nihostt/models \
+  nihostt:cuda
 ```
 
 Container images run as UID/GID `10001`; make host bind mounts writable by that
@@ -48,7 +57,8 @@ nihostt serve
 nihostt serve --port 8080 --pool-size 2 --metrics
 
 # Public browser deployment behind a trusted proxy
-nihostt serve --bind-all --host 0.0.0.0 --allow-origin https://stt.example.com --trust-proxy --metrics
+NIHOSTT_API_KEYS="$(openssl rand -hex 32)" \
+  nihostt serve --bind-all --host 0.0.0.0 --allow-origin https://stt.example.com --trust-proxy --metrics
 ```
 
 ## Checking health
@@ -85,7 +95,8 @@ Enable with `--metrics` (or `NIHOSTT_METRICS=1`):
 nihostt serve --metrics
 ```
 
-Scrape at `GET /metrics`:
+Scrape at `GET /metrics`. If `NIHOSTT_API_KEYS` is configured, include either
+`Authorization: Bearer <key>` or `x-api-key: <key>` on the scrape request.
 
 ```
 # HELP nihostt_up Whether the nihostt process is serving requests.
@@ -121,6 +132,19 @@ NIHOSTT_ALLOW_BIND_ANY=1 nihostt serve --host 0.0.0.0
 ```
 
 Required for Docker and reverse-proxy deployments.
+
+### Public bind requires API keys
+
+**Symptom:** `refusing to serve unauthenticated public API on '0.0.0.0'`
+
+**Fix:** Set `NIHOSTT_API_KEYS` or pass `--api-key`:
+
+```sh
+NIHOSTT_API_KEYS="$(openssl rand -hex 32)" nihostt serve --bind-all --host 0.0.0.0
+```
+
+Only use `--allow-unauthenticated-public` behind an already-authenticated
+private boundary.
 
 ### Browser requests get `origin_forbidden`
 

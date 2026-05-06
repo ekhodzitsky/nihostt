@@ -2,7 +2,7 @@
 
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Multipart, State};
-use axum::http::{HeaderValue, Method, Request, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::inference::{Engine, ProcessResult};
 use crate::protocol::{ClientMessage, ServerMessage};
-use crate::server::{OriginPolicy, ServerConfig};
+use crate::server::{AuthConfig, OriginPolicy, ServerConfig};
 
 static TEMP_UPLOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -34,6 +34,7 @@ pub struct AppState {
     pub rate_limiter: Option<Arc<crate::server::rate_limit::RateLimiter>>,
     pub trust_proxy: bool,
     pub origin_policy: OriginPolicy,
+    pub auth: AuthConfig,
     pub metrics_enabled: bool,
     pub shutdown: CancellationToken,
 }
@@ -60,6 +61,7 @@ pub async fn run_with_config(
         rate_limiter,
         trust_proxy: config.trust_proxy,
         origin_policy: config.origin_policy,
+        auth: config.auth,
         metrics_enabled: config.metrics_enabled,
         shutdown: cancel.clone(),
     };
@@ -119,6 +121,7 @@ pub async fn run_on_random_port_with_shutdown(
             allow_any: false,
             allowed_origins: Vec::new(),
         },
+        auth: AuthConfig::default(),
         metrics_enabled: false,
         shutdown: cancel.clone(),
     };
@@ -178,6 +181,10 @@ fn create_router(state: AppState) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             origin_layer,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth_layer,
         ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -275,6 +282,73 @@ async fn rate_limit_layer(
     next.run(req).await
 }
 
+async fn auth_layer(
+    State(state): State<Arc<AppState>>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    if !auth_required(req.method(), req.uri().path(), &state.auth) {
+        return next.run(req).await;
+    }
+
+    if request_is_authorized(req.headers(), &state.auth) {
+        return next.run(req).await;
+    }
+
+    (
+        StatusCode::UNAUTHORIZED,
+        [(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"))],
+        Json(serde_json::json!({"code": "unauthorized"})),
+    )
+        .into_response()
+}
+
+fn auth_required(method: &Method, path: &str, auth: &AuthConfig) -> bool {
+    auth.is_enabled() && *method != Method::OPTIONS && path != "/health" && path != "/ready"
+}
+
+fn request_is_authorized(headers: &HeaderMap, auth: &AuthConfig) -> bool {
+    extract_api_key(headers).is_some_and(|candidate| {
+        auth.api_keys
+            .iter()
+            .any(|allowed| constant_time_eq(candidate.as_bytes(), allowed.as_bytes()))
+    })
+}
+
+fn extract_api_key(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("x-api-key")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(extract_bearer_token)
+        })
+}
+
+fn extract_bearer_token(value: &str) -> Option<&str> {
+    let (scheme, token) = value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    let token = token.trim();
+    if token.is_empty() { None } else { Some(token) }
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let max_len = left.len().max(right.len());
+    let mut diff = left.len() ^ right.len();
+    for i in 0..max_len {
+        let left_byte = left.get(i).copied().unwrap_or(0);
+        let right_byte = right.get(i).copied().unwrap_or(0);
+        diff |= usize::from(left_byte ^ right_byte);
+    }
+    diff == 0
+}
+
 async fn origin_layer(
     State(state): State<Arc<AppState>>,
     req: Request<axum::body::Body>,
@@ -347,7 +421,7 @@ fn apply_cors_headers(headers: &mut axum::http::HeaderMap, origin: Option<&Heade
     );
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static("content-type"),
+        HeaderValue::from_static("authorization,content-type,x-api-key"),
     );
     headers.append(header::VARY, HeaderValue::from_static("origin"));
 }
@@ -1008,5 +1082,63 @@ mod tests {
 
         assert!(body.contains("nihostt_up 1"));
         assert!(body.contains("nihostt_pool_ready 1"));
+    }
+
+    #[test]
+    fn auth_required_only_when_enabled_and_not_probe_or_preflight() {
+        let auth = AuthConfig {
+            api_keys: vec!["secret".to_string()],
+        };
+
+        assert!(auth_required(&Method::POST, "/v1/transcribe", &auth));
+        assert!(auth_required(&Method::GET, "/metrics", &auth));
+        assert!(!auth_required(&Method::GET, "/health", &auth));
+        assert!(!auth_required(&Method::GET, "/ready", &auth));
+        assert!(!auth_required(&Method::OPTIONS, "/v1/transcribe", &auth));
+        assert!(!auth_required(
+            &Method::POST,
+            "/v1/transcribe",
+            &AuthConfig::default()
+        ));
+    }
+
+    #[test]
+    fn request_is_authorized_accepts_bearer_or_x_api_key() {
+        let auth = AuthConfig {
+            api_keys: vec!["secret".to_string()],
+        };
+        let mut bearer_headers = HeaderMap::new();
+        bearer_headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer secret"),
+        );
+        let mut api_key_headers = HeaderMap::new();
+        api_key_headers.insert("x-api-key", HeaderValue::from_static("secret"));
+
+        assert!(request_is_authorized(&bearer_headers, &auth));
+        assert!(request_is_authorized(&api_key_headers, &auth));
+    }
+
+    #[test]
+    fn request_is_authorized_rejects_missing_or_wrong_key() {
+        let auth = AuthConfig {
+            api_keys: vec!["secret".to_string()],
+        };
+        let mut wrong_headers = HeaderMap::new();
+        wrong_headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer nope"),
+        );
+
+        assert!(!request_is_authorized(&HeaderMap::new(), &auth));
+        assert!(!request_is_authorized(&wrong_headers, &auth));
+    }
+
+    #[test]
+    fn constant_time_eq_handles_equal_different_and_prefix_values() {
+        assert!(constant_time_eq(b"secret", b"secret"));
+        assert!(!constant_time_eq(b"secret", b"secreu"));
+        assert!(!constant_time_eq(b"secret", b"secret-longer"));
+        assert!(!constant_time_eq(b"secret-longer", b"secret"));
     }
 }

@@ -26,6 +26,13 @@ nihostt serve [OPTIONS]
   --allow-origin <URL>      Additional Origin allowed (repeatable).
                             Loopback origins are always allowed.
   --cors-allow-any          Accept any cross-origin caller (wildcard CORS).
+  --api-key <KEY>           API key allowed to call /v1/* and /metrics.
+                            Repeatable. Env NIHOSTT_API_KEYS accepts a
+                            comma-separated list.
+  --allow-unauthenticated-public
+                            Permit non-loopback bind without API keys. Only use
+                            behind an already-authenticated private boundary.
+                            Env: NIHOSTT_ALLOW_UNAUTHENTICATED_PUBLIC.
   --idle-timeout-secs <S>   WebSocket idle timeout [default: 300].
                             Env: NIHOSTT_IDLE_TIMEOUT_SECS.
   --ws-frame-max-bytes <B>  Max WS frame size [default: 524288 = 512 KiB].

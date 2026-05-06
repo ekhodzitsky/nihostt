@@ -11,6 +11,8 @@ info:
 
     1. Client connects to `ws://{host}:{port}/v1/ws` (default: `ws://127.0.0.1:9876/v1/ws`).
        - Server binds `127.0.0.1` by default; use `--bind-all` (or `NIHOSTT_ALLOW_BIND_ANY=1`) plus `--host 0.0.0.0` for Docker.
+       - Non-loopback binds require `NIHOSTT_API_KEYS` / `--api-key` unless `--allow-unauthenticated-public` is explicitly set.
+       - When API-key auth is enabled, connect with `Authorization: Bearer <key>` or `x-api-key: <key>`.
     2. Server sends `ready` message with protocol version, sample rate, and language.
     3. (Optional) Client sends `configure` to pick a non-default `sample_rate`.
     4. Client streams raw PCM16 audio as binary frames (default 48 kHz mono, or the negotiated rate).
@@ -36,6 +38,7 @@ info:
     - `--max-session-secs` (default 3600) — wall-clock session cap (0 disables)
     - `--shutdown-drain-secs` (default 10) — max wait for in-flight sessions on SIGTERM
     - `--rate-limit-per-minute` (default 60, set 0 to disable) — per-IP token-bucket limit on `/v1/*` (HTTP 429 when exhausted; `/health`, `/ready`, and `/metrics` exempt)
+    - `--api-key` / `NIHOSTT_API_KEYS` — protects `/v1/*` and `/metrics`; `/health` and `/ready` remain open for probes
     - Bind address: 127.0.0.1 by default; `--bind-all` / `NIHOSTT_ALLOW_BIND_ANY=1` required for non-loopback
     - Cross-origin requests: denied by default; use `--allow-origin URL` (repeatable) or `--cors-allow-any` to opt in
     - Pool saturation: WebSocket returns `error` message; REST returns 503
@@ -64,6 +67,7 @@ channels:
     description: |
       Canonical WebSocket endpoint for audio streaming and transcription.
       Accepts binary PCM16 frames and JSON control messages.
+      Requires `Authorization: Bearer <key>` or `x-api-key: <key>` when API-key auth is enabled.
     publish:
       summary: Client sends control messages and audio frames
       message:

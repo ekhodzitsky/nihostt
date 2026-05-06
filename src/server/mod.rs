@@ -12,9 +12,21 @@ pub struct ServerConfig {
     pub port: u16,
     pub host: String,
     pub origin_policy: OriginPolicy,
+    pub auth: AuthConfig,
     pub limits: RuntimeLimits,
     pub metrics_enabled: bool,
     pub trust_proxy: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AuthConfig {
+    pub api_keys: Vec<String>,
+}
+
+impl AuthConfig {
+    pub fn is_enabled(&self) -> bool {
+        !self.api_keys.is_empty()
+    }
 }
 
 #[derive(Debug, Clone)]

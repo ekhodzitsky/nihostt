@@ -32,6 +32,11 @@ spec:
               value: "nihostt=info"
             - name: NIHOSTT_METRICS
               value: "1"
+            - name: NIHOSTT_API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: nihostt-api
+                  key: api-keys
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
