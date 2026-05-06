@@ -12,7 +12,6 @@
 class Nihostt < Formula
   desc "On-device Japanese speech recognition server powered by ReazonSpeech-k2-v2"
   homepage "https://github.com/ekhodzitsky/nihostt"
-  version "0.1.2"
   license "MIT"
 
   on_macos do
