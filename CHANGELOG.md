@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.1] - 2026-05-05
+## [0.1.2] - 2026-05-06
 
 ### Added
 
@@ -18,8 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Kubernetes manifests** — `k8s/deployment.yaml` + `k8s/service.yaml` with init-container model download, liveness (`/health`) and readiness (`/ready`) probes.
 - **Nightly soak tests** — `.github/workflows/soak.yml` runs `soak_test` and `load_test` every night at 03:17 UTC.
 - **Benchmark tracking** — `.github/workflows/benchmark.yml` runs CER benchmark on PR and main push, uploads artifacts, and posts results to PR comments.
-- **Demo GIF** — `docs/nihostt-demo.gif` embedded in README showing server startup, health check, and REST API transcription.
-- **GHCR Docker badge** and `cargo install nihostt` in Quick Start.
+- **Docker CI** — `.github/workflows/ci.yml` now verifies `Dockerfile` and `Dockerfile.cuda` build successfully.
 
 ### Changed
 
@@ -27,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E tests on PRs** — removed `refs/heads/main` gate so e2e tests run on pull requests too.
 - **Production-hardened error handling** — replaced `unwrap()` / `expect()` in VAD state machine and WebSocket session creation with proper `Result` propagation. `StreamingSession::new` now returns `anyhow::Result`.
 - **OpenAPI spec** — updated with `/ready`, `confidence` field, and `429`/`503` response headers.
+
+## [0.1.1] - 2026-05-05
+
+### Added
+
+- **Expanded benchmark** — 134 real native-speaker clips (Tatoeba 9 + Tatoeba Extended 25 + JSUT basic5000 100). Overall CER: **9.23%** (287/3109 chars, punctuation-normalized). See `tests/benchmark.rs`.
+- **Demo GIF** — `docs/nihostt-demo.gif` embedded in README showing server startup, health check, and REST API transcription.
+- **GHCR Docker badge** and `cargo install nihostt` in Quick Start.
 
 ### Fixed
 
@@ -55,6 +62,7 @@ Initial release — local Japanese speech-to-text server powered by ReazonSpeech
 - **Cross-platform execution providers** — `--features coreml` (macOS ARM64 Neural Engine), `--features cuda` (Linux x86_64), CPU default.
 - **Privacy-first defaults** — loopback-only bind, origin allowlist, optional per-IP rate limiting, SHA-256 verified model downloads with atomic rename.
 
-[Unreleased]: https://github.com/ekhodzitsky/nihostt/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/ekhodzitsky/nihostt/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/ekhodzitsky/nihostt/releases/tag/v0.1.2
 [0.1.1]: https://github.com/ekhodzitsky/nihostt/releases/tag/v0.1.1
 [0.1.0]: https://github.com/ekhodzitsky/nihostt/releases/tag/v0.1.0
