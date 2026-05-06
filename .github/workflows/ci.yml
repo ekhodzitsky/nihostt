@@ -69,6 +69,15 @@ jobs:
       - run: cargo install cargo-audit
       - run: cargo audit
 
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image (CPU)
+        run: docker build -t nihostt:test .
+      - name: Build Docker image (CUDA)
+        run: docker build -f Dockerfile.cuda -t nihostt:cuda-test .
+
   deny:
     runs-on: ubuntu-latest
     steps:

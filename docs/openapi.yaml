@@ -25,6 +25,46 @@ paths:
                   status:
                     type: string
                     example: ok
+                  model:
+                    type: string
+                    example: reazonspeech-k2-v2
+                  language:
+                    type: string
+                    example: ja
+  /ready:
+    get:
+      summary: Readiness probe
+      operationId: readinessCheck
+      responses:
+        '200':
+          description: Server is ready (inference pool has capacity)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ready
+                  model:
+                    type: string
+                    example: reazonspeech-k2-v2
+                  language:
+                    type: string
+                    example: ja
+        '503':
+          description: Server not ready (inference pool saturated)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: not_ready
+                  reason:
+                    type: string
+                    example: inference pool saturated
   /v1/models:
     get:
       summary: List available models
@@ -69,10 +109,32 @@ paths:
                   text:
                     type: string
                     example: こんにちは。
+                  language:
+                    type: string
+                    example: ja
+                  confidence:
+                    type: number
+                    format: float
+                    minimum: 0
+                    maximum: 1
+                    description: Average token confidence (greedy argmax probability). Absent for silent/empty audio.
+                    example: 0.92
         '413':
           description: File too large
+        '429':
+          description: Rate limit exceeded
+          headers:
+            retry-after:
+              schema:
+                type: integer
+              description: Seconds until the rate limit resets
         '503':
           description: Server overloaded
+          headers:
+            retry-after:
+              schema:
+                type: integer
+              description: Seconds until the pool may have capacity
   /v1/transcribe/stream:
     post:
       summary: Stream transcription via SSE

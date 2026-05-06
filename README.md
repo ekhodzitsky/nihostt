@@ -94,6 +94,18 @@ ws.onopen = async () => {
 };
 ```
 
+### REST transcription example
+
+```bash
+# Health check
+curl http://127.0.0.1:9876/health
+# → {"status":"ok","model":"reazonspeech-k2-v2","language":"ja"}
+
+# Transcribe a file
+curl -F file=@recording.wav http://127.0.0.1:9876/v1/transcribe
+# → {"text":"こんにちは","language":"ja","confidence":0.92}
+```
+
 See [`examples/`](examples/) for Python, Kotlin, Go, Bun, and JavaScript clients.
 
 ## Architecture
@@ -166,12 +178,24 @@ docker run --gpus all -p 9876:9876 nihostt-cuda
 docker build --build-arg NIHOSTT_BAKE_MODEL=1 -t nihostt:baked .
 ```
 
+### Kubernetes
+
+```bash
+kubectl apply -f k8s/
+```
+
+Includes:
+- `Deployment` with init-container for model download
+- `Service` (ClusterIP)
+- Liveness probe (`/health`) and readiness probe (`/ready`)
+
 ## API
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/health` | Health check |
-| `POST` | `/v1/transcribe` | Upload audio file, get JSON transcript |
+| `GET` | `/health` | Liveness check (always returns 200 if process is up) |
+| `GET` | `/ready` | Readiness check (200 when inference pool has capacity, 503 when saturated) |
+| `POST` | `/v1/transcribe` | Upload audio file, get JSON transcript with optional `confidence` |
 | `POST` | `/v1/transcribe/stream` | Upload audio file, get SSE stream |
 | `WS` | `/v1/ws` | Real-time streaming with partial/final |
 

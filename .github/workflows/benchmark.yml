@@ -1,0 +1,56 @@
+name: Benchmark
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache model
+        id: cache-model
+        uses: actions/cache@v4
+        with:
+          path: ~/.nihostt/models
+          key: nihostt-model-${{ hashFiles('src/model/mod.rs') }}
+
+      - name: Download model
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        run: cargo run --release -- download
+
+      - name: Run benchmark
+        run: cargo test --release --test benchmark -- --ignored > benchmark-output.txt
+        timeout-minutes: 60
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: benchmark-output.txt
+
+      - name: Post PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.readFileSync('benchmark-output.txt', 'utf8');
+            const resultLine = output.split('\n').find(l => l.includes('Overall CER'));
+            const body = `## 📊 Benchmark Result\n\n${resultLine || 'See uploaded artifact for full output.'}`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body,
+            });

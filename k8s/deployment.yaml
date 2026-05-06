@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nihostt
+  labels:
+    app: nihostt
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nihostt
+  template:
+    metadata:
+      labels:
+        app: nihostt
+    spec:
+      containers:
+        - name: nihostt
+          image: ghcr.io/ekhodzitsky/nihostt:latest
+          ports:
+            - containerPort: 9876
+              name: http
+          env:
+            - name: RUST_LOG
+              value: "nihostt=info"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9876
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 9876
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+          volumeMounts:
+            - name: model-cache
+              mountPath: /root/.nihostt/models
+      volumes:
+        - name: model-cache
+          emptyDir: {}
+      initContainers:
+        - name: model-download
+          image: ghcr.io/ekhodzitsky/nihostt:latest
+          command: ["nihostt", "download"]
+          volumeMounts:
+            - name: model-cache
+              mountPath: /root/.nihostt/models
+          resources:
+            limits:
+              memory: "1Gi"
+              cpu: "500m"

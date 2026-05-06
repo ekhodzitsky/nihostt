@@ -12,21 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Expanded benchmark** — 534 real native-speaker clips (Tatoeba 9 + Tatoeba Extended 425 + JSUT basic5000 100). Overall CER: **7.82%** (579/7407 chars, punctuation-normalized). See `tests/benchmark.rs`.
-- **Demo GIF** — `docs/nihostt-demo.gif` embedded in README showing server startup, health check, and REST API transcription.
-- **GHCR Docker badge** and `cargo install nihostt` in Quick Start.
-
-### Added
-
 - **Confidence scores** — `POST /v1/transcribe` now returns an optional `confidence` field (average token probability from greedy argmax). See `docs/api-versioning.md`.
 - **Readiness probe** — new `GET /ready` endpoint returns 200 when the inference pool has available sessions, 503 when saturated. Exempt from rate limiting like `/health`.
 - **API versioning policy** — documented in `docs/api-versioning.md` (additive-only, deprecation cycle, stability guarantees).
+- **Kubernetes manifests** — `k8s/deployment.yaml` + `k8s/service.yaml` with init-container model download, liveness (`/health`) and readiness (`/ready`) probes.
 - **Nightly soak tests** — `.github/workflows/soak.yml` runs `soak_test` and `load_test` every night at 03:17 UTC.
+- **Benchmark tracking** — `.github/workflows/benchmark.yml` runs CER benchmark on PR and main push, uploads artifacts, and posts results to PR comments.
+- **Demo GIF** — `docs/nihostt-demo.gif` embedded in README showing server startup, health check, and REST API transcription.
+- **GHCR Docker badge** and `cargo install nihostt` in Quick Start.
 
 ### Changed
 
 - **Rate limiting on by default** — `--rate-limit-per-minute` now defaults to `60` (was `0`). Burst size increased to `20`.
 - **E2E tests on PRs** — removed `refs/heads/main` gate so e2e tests run on pull requests too.
 - **Production-hardened error handling** — replaced `unwrap()` / `expect()` in VAD state machine and WebSocket session creation with proper `Result` propagation. `StreamingSession::new` now returns `anyhow::Result`.
+- **OpenAPI spec** — updated with `/ready`, `confidence` field, and `429`/`503` response headers.
 
 ### Fixed
 
