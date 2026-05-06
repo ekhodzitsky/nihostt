@@ -12,20 +12,20 @@
 class Nihostt < Formula
   desc "On-device Japanese speech recognition server powered by ReazonSpeech-k2-v2"
   homepage "https://github.com/ekhodzitsky/nihostt"
-  version "0.1.1"
+  version "0.1.2"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/ekhodzitsky/nihostt/releases/download/v0.1.1/nihostt-0.1.1-aarch64-apple-darwin.tar.gz"
-      sha256 "96d879dc59ed8f8120da713a820656e67d3619088b845a8466d991e893a048fa"
+      url "https://github.com/ekhodzitsky/nihostt/releases/download/v0.1.2/nihostt-0.1.2-aarch64-apple-darwin.tar.gz"
+      sha256 "67c0a24dc4d5fefb166d1687c30e10f3d31054b2a0ca1a74b1e6e42d7d6c8285"
     end
   end
 
   on_linux do
     if Hardware::CPU.intel?
-      url "https://github.com/ekhodzitsky/nihostt/releases/download/v0.1.1/nihostt-0.1.1-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "03411e90223ffa642fdaa7b7ac895eea9aeb543b099c14972ff5e7975617c72f"
+      url "https://github.com/ekhodzitsky/nihostt/releases/download/v0.1.2/nihostt-0.1.2-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "3cf8fa3c4e8c134cd7a909c1cf902699825d566fcb69bb6e1e2c415a75904e6b"
     end
   end
 
