@@ -18,12 +18,15 @@ sudo mv nihostt /usr/local/bin/
 ```sh
 # CPU (any platform)
 docker build -t nihostt .
-docker run -p 9876:9876 -v ~/.nihostt/models:/root/.nihostt/models nihostt
+docker run -p 9876:9876 -v ~/.nihostt/models:/home/nihostt/.nihostt/models nihostt
 
 # CUDA (Linux, requires NVIDIA Container Toolkit)
 docker build -f Dockerfile.cuda -t nihostt:cuda .
-docker run --gpus all -p 9876:9876 -v ~/.nihostt/models:/root/.nihostt/models nihostt:cuda
+docker run --gpus all -p 9876:9876 -v ~/.nihostt/models:/home/nihostt/.nihostt/models nihostt:cuda
 ```
+
+Container images run as UID/GID `10001`; make host bind mounts writable by that
+ID on Linux, or use a baked image / Kubernetes `fsGroup` volume.
 
 ### Homebrew
 

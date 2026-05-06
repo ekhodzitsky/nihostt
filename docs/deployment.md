@@ -6,14 +6,14 @@
 
 ```bash
 docker build -t nihostt .
-docker run -p 9876:9876 -v ~/.nihostt/models:/root/.nihostt/models nihostt
+docker run -p 9876:9876 -v ~/.nihostt/models:/home/nihostt/.nihostt/models nihostt
 ```
 
 ### CUDA (Linux + NVIDIA)
 
 ```bash
 docker build -f Dockerfile.cuda -t nihostt:cuda .
-docker run --gpus all -p 9876:9876 -v ~/.nihostt/models:/root/.nihostt/models nihostt:cuda
+docker run --gpus all -p 9876:9876 -v ~/.nihostt/models:/home/nihostt/.nihostt/models nihostt:cuda
 ```
 
 ### Pre-built image with model baked in
@@ -22,6 +22,9 @@ docker run --gpus all -p 9876:9876 -v ~/.nihostt/models:/root/.nihostt/models ni
 docker build --build-arg NIHOSTT_BAKE_MODEL=1 -t nihostt:baked .
 docker run -p 9876:9876 nihostt:baked
 ```
+
+The container runs as UID/GID `10001` with `HOME=/home/nihostt`, so persistent
+model-cache mounts must target `/home/nihostt/.nihostt/models`.
 
 ## systemd Service
 

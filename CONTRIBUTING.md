@@ -45,7 +45,7 @@ src/
 
 ## Submitting Changes
 
-1. **Fork & branch** — create a feature branch from `main`
+1. **Fork & branch** — create a feature branch from `master`
 2. **Write tests** — every bug fix and feature needs tests
 3. **Run the full suite** — `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo deny check`
 4. **Update docs** — README, AGENTS.md, and inline docs if interfaces change

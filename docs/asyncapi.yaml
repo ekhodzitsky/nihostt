@@ -42,7 +42,7 @@ info:
     - Internal errors hidden from clients (generic message sent)
   license:
     name: MIT
-    url: https://github.com/ekhodzitsky/nihostt/blob/main/LICENSE
+    url: https://github.com/ekhodzitsky/nihostt/blob/master/LICENSE
   contact:
     name: nihostt
     url: https://github.com/ekhodzitsky/nihostt

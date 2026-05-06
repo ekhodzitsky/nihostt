@@ -18,11 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Safer session lifecycle** — pooled inference sessions are returned synchronously on guard drop, including FFI streaming sessions, instead of relying on detached async cleanup.
 - **Blocking inference isolation** — REST and SSE inference work now runs on blocking threads so long transcriptions do not stall the async runtime.
 - **Dependency graph cleanup** — removed unused direct dependencies (`dashmap`, `dirs`, `ndarray`), aligned `sha2` / `thiserror`, and changed `cargo-deny` duplicate checks from warning-only to deny-by-default with a pinned exception list.
+- **Container hardening** — Docker images now run with deterministic UID/GID `10001` and `HOME=/home/nihostt`; Kubernetes manifests use matching non-root security context, read-only root filesystem, writable `/tmp`, and the correct model-cache mount.
 
 ### Fixed
 
 - **Multipart temp-file collisions** — uploads now use collision-resistant temp filenames with `create_new` and clean up partial files on failure.
 - **Cached model mismatch handling** — corrupt or unexpected cached model files are removed and redownloaded instead of being trusted.
+- **Default-branch automation drift** — CI, benchmark, Homebrew, and release workflows now target the repository's `master` branch consistently.
 
 ## [0.1.2] - 2026-05-06
 
@@ -34,13 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **API versioning policy** — documented in `docs/api-versioning.md` (additive-only, deprecation cycle, stability guarantees).
 - **Kubernetes manifests** — `k8s/deployment.yaml` + `k8s/service.yaml` with init-container model download, liveness (`/health`) and readiness (`/ready`) probes.
 - **Nightly soak tests** — `.github/workflows/soak.yml` runs `soak_test` and `load_test` every night at 03:17 UTC.
-- **Benchmark tracking** — `.github/workflows/benchmark.yml` runs CER benchmark on PR and main push, uploads artifacts, and posts results to PR comments.
+- **Benchmark tracking** — `.github/workflows/benchmark.yml` runs CER benchmark on PR and master push, uploads artifacts, and posts results to PR comments.
 - **Docker CI** — `.github/workflows/ci.yml` now verifies `Dockerfile` and `Dockerfile.cuda` build successfully.
 
 ### Changed
 
 - **Rate limiting on by default** — `--rate-limit-per-minute` now defaults to `60` (was `0`). Burst size defaults to `10`.
-- **E2E tests on PRs** — removed `refs/heads/main` gate so e2e tests run on pull requests too.
+- **E2E tests on PRs** — removed the default-branch-only gate so e2e tests run on pull requests too.
 - **Production-hardened error handling** — replaced `unwrap()` / `expect()` in VAD state machine and WebSocket session creation with proper `Result` propagation. `StreamingSession::new` now returns `anyhow::Result`.
 - **OpenAPI spec** — updated with `/ready`, `confidence` field, and `429`/`503` response headers.
 

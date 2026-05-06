@@ -66,7 +66,9 @@ COPY --from=builder /build/target/release/nihostt /usr/local/bin/nihostt
 COPY --from=builder /build/target/release/libonnxruntime*.so* /usr/local/lib/
 RUN ldconfig
 
-RUN groupadd -r nihostt && useradd -r -g nihostt nihostt && \
+RUN groupadd --gid 10001 nihostt && \
+    useradd --uid 10001 --gid nihostt --home-dir /home/nihostt \
+        --create-home --shell /usr/sbin/nologin --no-log-init nihostt && \
     mkdir -p /home/nihostt/.nihostt/models && chown -R nihostt:nihostt /home/nihostt
 
 # Copy baked model files (only present when NIHOSTT_BAKE_MODEL=1)
@@ -74,6 +76,7 @@ COPY --from=model-fetcher --chown=nihostt:nihostt /models/. /home/nihostt/.nihos
 
 USER nihostt
 
+ENV HOME=/home/nihostt
 ENV RUST_LOG=nihostt=info
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"

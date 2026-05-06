@@ -14,6 +14,13 @@ spec:
       labels:
         app: nihostt
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: nihostt
           image: ghcr.io/ekhodzitsky/nihostt:latest
@@ -23,6 +30,13 @@ spec:
           env:
             - name: RUST_LOG
               value: "nihostt=info"
+            - name: NIHOSTT_METRICS
+              value: "1"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
           livenessProbe:
             httpGet:
               path: /health
@@ -44,9 +58,13 @@ spec:
               cpu: "2000m"
           volumeMounts:
             - name: model-cache
-              mountPath: /root/.nihostt/models
+              mountPath: /home/nihostt/.nihostt/models
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: model-cache
+          emptyDir: {}
+        - name: tmp
           emptyDir: {}
       initContainers:
         - name: model-download
@@ -54,7 +72,14 @@ spec:
           command: ["nihostt", "download"]
           volumeMounts:
             - name: model-cache
-              mountPath: /root/.nihostt/models
+              mountPath: /home/nihostt/.nihostt/models
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
           resources:
             limits:
               memory: "1Gi"

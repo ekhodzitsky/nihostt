@@ -67,7 +67,9 @@ RUN apt-get update && \
 
 COPY --from=builder /build/target/release/nihostt /usr/local/bin/nihostt
 
-RUN groupadd -r nihostt && useradd -r -g nihostt nihostt && \
+RUN groupadd --gid 10001 nihostt && \
+    useradd --uid 10001 --gid nihostt --home-dir /home/nihostt \
+        --create-home --shell /usr/sbin/nologin --no-log-init nihostt && \
     mkdir -p /home/nihostt/.nihostt/models && chown -R nihostt:nihostt /home/nihostt
 
 # Copy baked model files (only present when NIHOSTT_BAKE_MODEL=1)
@@ -75,6 +77,7 @@ COPY --from=model-fetcher --chown=nihostt:nihostt /models/. /home/nihostt/.nihos
 
 USER nihostt
 
+ENV HOME=/home/nihostt
 ENV RUST_LOG=nihostt=info
 
 EXPOSE 9876
