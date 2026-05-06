@@ -20,8 +20,17 @@ many are 2–6 words, include exclamations, and use kanji variants that the mode
 sometimes renders in kana (e.g., "誠に" → "まことに").
 
 - **CER**: ~21%
-- **Combined CER** (34 clips): ~12.67%
 - **Source**: Tatoeba Japanese audio (CC-BY 2.0 FR)
+
+### `jsut/` — JSUT basic5000 sample (100 clips)
+
+Random sample from the JSUT corpus basic5000 subset — clean read speech by a
+single native Japanese speaker in an anechoic room. Covers diverse vocabulary
+including domain-specific terms (biology, history, technical).
+
+- **CER**: ~13%
+- **Combined CER** (134 clips): ~13.59%
+- **Source**: JSUT corpus (Saruwatari Lab, University of Tokyo)
 
 ## Adding More Clips
 

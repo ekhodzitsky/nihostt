@@ -28,6 +28,7 @@ fn main() {
     let datasets = vec![
         (fixtures_root.join("tatoeba"), "Tatoeba"),
         (fixtures_root.join("tatoeba_extended"), "Tatoeba Extended"),
+        (fixtures_root.join("jsut"), "JSUT"),
     ];
 
     let mut all_clips: Vec<(PathBuf, String, String)> = Vec::new();
