@@ -5,13 +5,15 @@ use ort::value::TensorRef;
 /// Greedy RNN-T decode.
 ///
 /// `mel` shape: `[n_frames, N_MELS]`
+/// Returns the decoded text and the average token confidence (`None` if no
+/// non-blank tokens were emitted).
 pub fn greedy_decode(
     mel: &[Vec<f32>],
     session: &mut PooledSession,
     tokens: &[String],
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, Option<f32>)> {
     if mel.is_empty() {
-        return Ok(String::new());
+        return Ok((String::new(), None));
     }
 
     let n_frames = mel.len();
@@ -50,6 +52,7 @@ pub fn greedy_decode(
     let mut prev_token = blank_id as i64;
     let mut prev_prev_token = blank_id as i64;
     let mut result_tokens: Vec<usize> = Vec::new();
+    let mut token_confidences: Vec<f32> = Vec::new();
 
     let mut dec_data_buf: Vec<f32> = Vec::new();
     let mut logits_buf: Vec<f32> = Vec::new();
@@ -96,7 +99,7 @@ pub fn greedy_decode(
         }
         drop(joiner_outputs);
 
-        // Argmax
+        // Argmax + softmax for confidence
         let mut best_token = blank_id;
         let mut best_logit = f32::NEG_INFINITY;
         for (i, &logit) in logits_buf.iter().enumerate() {
@@ -110,6 +113,11 @@ pub fn greedy_decode(
             result_tokens.push(best_token);
             prev_prev_token = prev_token;
             prev_token = best_token as i64;
+            // numerically-stable softmax over the logits
+            let max_logit = logits_buf.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let exp_sum: f32 = logits_buf.iter().map(|&l| (l - max_logit).exp()).sum();
+            let prob = (best_logit - max_logit).exp() / exp_sum;
+            token_confidences.push(prob);
         }
     }
 
@@ -121,5 +129,11 @@ pub fn greedy_decode(
         }
     }
 
-    Ok(text)
+    let avg_confidence = if token_confidences.is_empty() {
+        None
+    } else {
+        Some(token_confidences.iter().sum::<f32>() / token_confidences.len() as f32)
+    };
+
+    Ok((text, avg_confidence))
 }

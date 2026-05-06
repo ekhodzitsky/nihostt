@@ -44,6 +44,9 @@ const SILENCE_END_SAMPLES: usize = (SILENCE_END_MS * SAMPLE_RATE / 1000) as usiz
 #[derive(Debug, Clone)]
 pub struct InferenceResult {
     pub text: String,
+    /// Average token confidence (probability of the greedy argmax choice).
+    /// `None` when the model produces no tokens (silent / empty audio).
+    pub confidence: Option<f32>,
 }
 
 /// Result returned by [`StreamingSession::process_chunk`].
@@ -96,6 +99,12 @@ impl SessionPool {
         })
     }
 
+    /// Quick non-blocking check whether the pool has at least one available
+    /// session (i.e. the engine is ready to accept inference requests).
+    pub fn is_ready(&self) -> bool {
+        self.semaphore.try_acquire().is_ok()
+    }
+
     /// Blocking checkout for use inside `spawn_blocking`.
     pub fn checkout_blocking(&self) -> anyhow::Result<BlockingSessionGuard> {
         let _permit = self
@@ -122,17 +131,21 @@ pub struct SessionGuard<'a> {
 impl<'a> std::ops::Deref for SessionGuard<'a> {
     type Target = PooledSession;
     fn deref(&self) -> &Self::Target {
+        // Invariant: session is only taken in Drop, so it is always Some
+        // while the guard is alive.
         self.session
             .as_ref()
-            .expect("session is always present until drop")
+            .unwrap_or_else(|| unreachable!("session taken in Drop only"))
     }
 }
 
 impl<'a> std::ops::DerefMut for SessionGuard<'a> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // Invariant: session is only taken in Drop, so it is always Some
+        // while the guard is alive.
         self.session
             .as_mut()
-            .expect("session is always present until drop")
+            .unwrap_or_else(|| unreachable!("session taken in Drop only"))
     }
 }
 
@@ -167,34 +180,42 @@ unsafe impl Send for BlockingSessionGuard {}
 impl std::ops::Deref for BlockingSessionGuard {
     type Target = PooledSession;
     fn deref(&self) -> &Self::Target {
+        // Invariant: session is only taken in Drop or into_inner, so it is
+        // always Some while the guard is alive.
         self.session
             .as_ref()
-            .expect("session is always present until drop")
+            .unwrap_or_else(|| unreachable!("session taken in Drop or into_inner only"))
     }
 }
 
 impl std::ops::DerefMut for BlockingSessionGuard {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // Invariant: session is only taken in Drop or into_inner, so it is
+        // always Some while the guard is alive.
         self.session
             .as_mut()
-            .expect("session is always present until drop")
+            .unwrap_or_else(|| unreachable!("session taken in Drop or into_inner only"))
     }
 }
 
 impl BlockingSessionGuard {
     /// Mutable reference to the pooled session.
     pub fn session(&mut self) -> &mut PooledSession {
+        // Invariant: session is only taken in Drop or into_inner, so it is
+        // always Some while the guard is alive.
         self.session
             .as_mut()
-            .expect("session is always present until drop")
+            .unwrap_or_else(|| unreachable!("session taken in Drop or into_inner only"))
     }
 
     /// Take ownership of the pooled session, consuming the guard without
     /// returning the session to the pool.
     pub fn into_inner(mut self) -> PooledSession {
+        // Invariant: session is always present because into_inner consumes self
+        // and is the only place that takes the session before Drop.
         self.session
             .take()
-            .expect("session is always present until drop")
+            .unwrap_or_else(|| unreachable!("session present in into_inner"))
     }
 }
 
@@ -250,13 +271,14 @@ impl Engine {
         session: &mut PooledSession,
     ) -> anyhow::Result<InferenceResult> {
         let mel = features::compute_mel(samples, 16000)?;
-        let text = decode::greedy_decode(&mel, session, &self.tokens)?;
+        let (text, confidence) = decode::greedy_decode(&mel, session, &self.tokens)?;
         Ok(InferenceResult {
             text: punctuation::auto_punctuate(&text),
+            confidence,
         })
     }
 
-    pub fn create_streaming_session(&self) -> StreamingSession {
+    pub fn create_streaming_session(&self) -> anyhow::Result<StreamingSession> {
         StreamingSession::new(self.model_dir.clone(), self.tokens.clone())
     }
 }
@@ -284,12 +306,12 @@ pub struct StreamingSession {
 }
 
 impl StreamingSession {
-    pub fn new(model_dir: PathBuf, tokens: Vec<String>) -> Self {
+    pub fn new(model_dir: PathBuf, tokens: Vec<String>) -> anyhow::Result<Self> {
         let vad = vad::SileroVad::new(&model_dir.join("silero_vad.onnx"))
-            .expect("failed to load VAD model");
+            .context("failed to load VAD model")?;
         #[cfg(feature = "diarization")]
         let diarization_state = diarization::DiarizationState::load(&model_dir);
-        Self {
+        Ok(Self {
             tokens,
             vad,
             audio_buffer: Vec::new(),
@@ -301,7 +323,7 @@ impl StreamingSession {
             last_partial_at: 0,
             #[cfg(feature = "diarization")]
             diarization_state,
-        }
+        })
     }
 
     /// Process a chunk of audio (16 kHz, mono, f32).
@@ -343,7 +365,8 @@ impl StreamingSession {
                     self.silence_start_sample = Some(frame_start);
                 }
 
-                let silence_samples = frame_end - self.silence_start_sample.unwrap();
+                let silence_start = self.silence_start_sample.unwrap_or(frame_start);
+                let silence_samples = frame_end - silence_start;
                 let speech_samples = self
                     .last_speech_sample
                     .saturating_sub(self.speech_start_sample);
@@ -420,7 +443,8 @@ impl StreamingSession {
                 if self.silence_start_sample.is_none() {
                     self.silence_start_sample = Some(frame_start);
                 }
-                let silence_samples = frame_end - self.silence_start_sample.unwrap();
+                let silence_start = self.silence_start_sample.unwrap_or(frame_start);
+                let silence_samples = frame_end - silence_start;
                 let speech_samples = self
                     .last_speech_sample
                     .saturating_sub(self.speech_start_sample);
@@ -462,7 +486,7 @@ impl StreamingSession {
         let end = (self.last_speech_sample + PAD_SAMPLES).min(self.audio_buffer.len());
         let segment = &self.audio_buffer[start..end];
         let mel = features::compute_mel(segment, SAMPLE_RATE)?;
-        let text = decode::greedy_decode(&mel, session, &self.tokens)?;
+        let (text, _) = decode::greedy_decode(&mel, session, &self.tokens)?;
         Ok(text)
     }
 
@@ -471,7 +495,7 @@ impl StreamingSession {
         let end = self.vad_processed;
         let segment = &self.audio_buffer[start..end];
         let mel = features::compute_mel(segment, SAMPLE_RATE)?;
-        let text = decode::greedy_decode(&mel, session, &self.tokens)?;
+        let (text, _) = decode::greedy_decode(&mel, session, &self.tokens)?;
         Ok(text)
     }
 

@@ -1,0 +1,41 @@
+name: Soak & Load Tests
+
+on:
+  schedule:
+    # 03:17 UTC — low-traffic window
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache model
+        id: cache-model
+        uses: actions/cache@v4
+        with:
+          path: ~/.nihostt/models
+          key: nihostt-model-${{ hashFiles('src/model/mod.rs') }}
+
+      - name: Download model
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        run: cargo run --release -- download
+
+      - name: Run soak test
+        run: cargo test --release --test soak_test -- --ignored
+        timeout-minutes: 30
+        env:
+          NIHOSTT_SOAK_DURATION_SECS: 300
+
+      - name: Run load tests
+        run: cargo test --release --test load_test -- --ignored --test-threads=1
+        timeout-minutes: 30

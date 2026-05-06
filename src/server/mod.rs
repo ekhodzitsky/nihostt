@@ -40,8 +40,8 @@ impl Default for RuntimeLimits {
             idle_timeout_secs: 300,
             ws_frame_max_bytes: 512 * 1024,
             body_limit_bytes: 50 * 1024 * 1024,
-            rate_limit_per_minute: 0,
-            rate_limit_burst: 10,
+            rate_limit_per_minute: 60,
+            rate_limit_burst: 20,
             max_session_secs: 3600,
             shutdown_drain_secs: 10,
         }

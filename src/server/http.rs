@@ -146,6 +146,7 @@ fn create_router(state: AppState) -> Router {
     let state = Arc::new(state);
     Router::new()
         .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
         .route("/v1/transcribe", post(transcribe_handler))
         .route("/v1/transcribe/stream", post(transcribe_stream_handler))
         .route("/v1/ws", get(ws_handler))
@@ -163,7 +164,7 @@ async fn rate_limit_layer(
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    if req.uri().path() == "/health" {
+    if req.uri().path() == "/health" || req.uri().path() == "/ready" {
         return next.run(req).await;
     }
 
@@ -207,6 +208,26 @@ async fn health_handler() -> Json<serde_json::Value> {
         "model": "reazonspeech-k2-v2",
         "language": "ja"
     }))
+}
+
+async fn ready_handler(State(state): State<Arc<AppState>>) -> Response {
+    if state.engine.pool.is_ready() {
+        Json(serde_json::json!({
+            "status": "ready",
+            "model": "reazonspeech-k2-v2",
+            "language": "ja"
+        }))
+        .into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "not_ready",
+                "reason": "inference pool saturated"
+            })),
+        )
+            .into_response()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -285,10 +306,14 @@ async fn transcribe_handler(
         StatusCode::UNPROCESSABLE_ENTITY.into_response()
     })?;
 
-    Ok(Json(serde_json::json!({
+    let mut response = serde_json::json!({
         "text": result.text,
         "language": "ja"
-    })))
+    });
+    if let Some(conf) = result.confidence {
+        response["confidence"] = serde_json::json!(conf);
+    }
+    Ok(Json(response))
 }
 
 // ---------------------------------------------------------------------------
@@ -485,7 +510,20 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
         return;
     }
 
-    let mut streaming_session = state.engine.create_streaming_session();
+    let mut streaming_session = match state.engine.create_streaming_session() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to create streaming session");
+            let err = ServerMessage::Error {
+                message: "server error: failed to initialise streaming session".to_string(),
+                retry_after_ms: Some(30000),
+            };
+            if let Ok(json) = serde_json::to_string(&err) {
+                let _ = socket.send(WsMessage::Text(json.into())).await;
+            }
+            return;
+        }
+    };
     let mut client_sample_rate: u32 = 48000;
     let session_start = Instant::now();
     let max_session = Duration::from_secs(state.limits.max_session_secs);

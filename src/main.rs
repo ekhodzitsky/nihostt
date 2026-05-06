@@ -65,8 +65,8 @@ enum Commands {
         #[arg(long, env = "NIHOSTT_BODY_LIMIT_BYTES", default_value_t = 50 * 1024 * 1024)]
         body_limit_bytes: usize,
 
-        /// Per-IP rate limit — requests per minute. 0 = off (default).
-        #[arg(long, env = "NIHOSTT_RATE_LIMIT_PER_MINUTE", default_value_t = 0)]
+        /// Per-IP rate limit — requests per minute (default 60). Set to 0 to disable.
+        #[arg(long, env = "NIHOSTT_RATE_LIMIT_PER_MINUTE", default_value_t = 60)]
         rate_limit_per_minute: u32,
 
         /// Rate-limit burst size (default 10).

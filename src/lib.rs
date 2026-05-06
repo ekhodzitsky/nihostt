@@ -23,7 +23,7 @@
 //! let text = engine.transcribe_file("audio.wav")?;
 //!
 //! // VAD-based streaming recognition
-//! let mut session = engine.create_streaming_session();
+//! let mut session = engine.create_streaming_session()?;
 //! session.process_chunk(&audio_16khz)?;
 //! ```
 //!

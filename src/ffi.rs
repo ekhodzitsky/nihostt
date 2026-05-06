@@ -224,7 +224,13 @@ pub unsafe extern "C" fn nihostt_stream_new(engine: *mut NihosttEngine) -> *mut 
         }
     };
 
-    let streaming = engine_ref.create_streaming_session();
+    let streaming = match engine_ref.create_streaming_session() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("nihostt_stream_new: streaming session creation failed: {e}");
+            return ptr::null_mut();
+        }
+    };
     let pooled = session.into_inner();
 
     let stream = NihosttStream {
