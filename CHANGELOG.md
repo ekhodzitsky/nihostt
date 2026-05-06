@@ -7,13 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-05-06
+
 ### Added
 
+- **API-key authentication** — public REST, SSE, WebSocket, and metrics routes can now require `Authorization: Bearer <key>` or `x-api-key: <key>` via `--api-key` / `NIHOSTT_API_KEYS`.
 - **Prometheus metrics endpoint** — `GET /metrics` is available when the server starts with `--metrics`, exposing `nihostt_up` and `nihostt_pool_ready`.
 - **Origin preflight handling** — REST, SSE, and WebSocket routes now respond to CORS preflight requests and reject unknown browser origins with `origin_forbidden`.
 
 ### Changed
 
+- **Fail-closed public binds** — non-loopback binds now require API keys unless `--allow-unauthenticated-public` is set explicitly, while loopback development remains zero-config.
 - **Pinned model supply chain** — model downloads use immutable upstream revisions and SHA-256 verification for ReazonSpeech, Silero VAD, WeSpeaker, and the official INT8 encoder.
 - **Safer session lifecycle** — pooled inference sessions are returned synchronously on guard drop, including FFI streaming sessions, instead of relying on detached async cleanup.
 - **Blocking inference isolation** — REST and SSE inference work now runs on blocking threads so long transcriptions do not stall the async runtime.
@@ -81,7 +85,8 @@ Initial release — local Japanese speech-to-text server powered by ReazonSpeech
 - **Cross-platform execution providers** — `--features coreml` (macOS ARM64 Neural Engine), `--features cuda` (Linux x86_64), CPU default.
 - **Privacy-first defaults** — loopback-only bind, origin allowlist, optional per-IP rate limiting, SHA-256 verified model downloads with atomic rename.
 
-[Unreleased]: https://github.com/ekhodzitsky/nihostt/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/ekhodzitsky/nihostt/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/ekhodzitsky/nihostt/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/ekhodzitsky/nihostt/releases/tag/v0.1.2
 [0.1.1]: https://github.com/ekhodzitsky/nihostt/releases/tag/v0.1.1
 [0.1.0]: https://github.com/ekhodzitsky/nihostt/releases/tag/v0.1.0
