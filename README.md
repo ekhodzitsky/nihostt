@@ -265,7 +265,7 @@ fresh copy before serving requests.
 - Non-loopback binds fail closed unless `NIHOSTT_API_KEYS` / `--api-key` is set. Use `--allow-unauthenticated-public` only behind an already-authenticated private boundary.
 - API-key auth protects `/v1/*` and `/metrics`; `/health` and `/ready` remain open for probes.
 - Browser cross-origin requests are denied unless the origin is loopback, listed with `--allow-origin`, or `--cors-allow-any` is set.
-- Per-IP rate limiting is on by default: `--rate-limit-per-minute 60`, `--rate-limit-burst 10`. Set the rate to `0` to disable it.
+- Per-IP rate limiting is on by default: `--rate-limit-per-minute 60`, `--rate-limit-burst 20`. Set the rate to `0` to disable it.
 - `/health`, `/ready`, and `/metrics` are exempt from rate limiting so probes keep working under load.
 - `--metrics` exposes Prometheus text metrics at `GET /metrics`.
 
