@@ -1,8 +1,8 @@
 # nihostt
 
 [![CI](https://github.com/ekhodzitsky/nihostt/actions/workflows/ci.yml/badge.svg)](https://github.com/ekhodzitsky/nihostt/actions/workflows/ci.yml)
-<!-- [![crates.io](https://img.shields.io/crates/v/nihostt.svg)](https://crates.io/crates/nihostt) -->
-<!-- Uncomment after first crates.io publish -->
+[![crates.io](https://img.shields.io/crates/v/nihostt.svg)](https://crates.io/crates/nihostt)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/ekhodzitsky/nihostt/pkgs/container/nihostt)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 > **Local Japanese speech-to-text server.** On-device, real-time, privacy-first — powered by ReazonSpeech-k2-v2 via ONNX Runtime. No cloud APIs, no API keys, no data leaves your machine.
@@ -41,19 +41,19 @@ cargo build --release
 ## Quick Start
 
 ```bash
-# 1. Install from source
-git clone https://github.com/ekhodzitsky/nihostt.git
-cd nihostt
-cargo build --release
+# 1. Install (choose one)
+cargo install nihostt          # from crates.io
+# or: brew tap ekhodzitsky/nihostt && brew install nihostt
+# or: git clone ... && cargo build --release
 
 # 2. Download model (~155 MB INT8, one-time)
-./target/release/nihostt download
+nihostt download
 
 # 3. Start server
-./target/release/nihostt serve
+nihostt serve
 
 # 4. Transcribe a file
-./target/release/nihostt transcribe recording.wav
+nihostt transcribe recording.wav
 ```
 
 ### WebSocket streaming example
@@ -67,16 +67,26 @@ ws.onmessage = (event) => {
   if (msg.type === 'final')   console.log('final:  ', msg.text, 'speaker:', msg.speaker_id);
 };
 
-ws.onopen = () => {
-  // Send raw PCM16 @ 16kHz
-  navigator.mediaDevices.getUserMedia({ audio: true })
-    .then(stream => {
-      const recorder = new MediaRecorder(stream);
-      recorder.ondataavailable = e => {
-        e.data.arrayBuffer().then(buf => ws.send(buf));
-      };
-      recorder.start(500);
-    });
+ws.onopen = async () => {
+  // Server expects raw PCM16 @ 16 kHz mono.
+  // MediaRecorder outputs encoded audio (WebM/Opus), so use AudioContext
+  // for raw samples. See examples/ for full AudioWorklet-based clients.
+  const audioCtx = new AudioContext({ sampleRate: 16000 });
+  const stream   = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const source   = audioCtx.createMediaStreamSource(stream);
+  const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+
+  processor.onaudioprocess = (e) => {
+    const f32 = e.inputBuffer.getChannelData(0);
+    const pcm16 = new Int16Array(f32.length);
+    for (let i = 0; i < f32.length; i++) {
+      pcm16[i] = Math.max(-1, Math.min(1, f32[i])) * 0x7FFF;
+    }
+    ws.send(pcm16.buffer);
+  };
+
+  source.connect(processor);
+  processor.connect(audioCtx.destination);
 };
 ```
 
@@ -117,8 +127,6 @@ cargo test --test benchmark -- --ignored
 ## Installation
 
 ### macOS (Homebrew)
-
-> Available after the first release. Formula is ready in [`Formula/nihostt.rb`](Formula/nihostt.rb).
 
 ```bash
 brew tap ekhodzitsky/nihostt
