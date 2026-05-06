@@ -47,3 +47,17 @@ Compare the digest against the one published in the release notes.
 | Rebuild reproducibility proof | ❌ | ❌ | ✅ |
 
 For privacy-conscious deployments, verify **both** minisign and checksums — they fail independently, so it takes two compromises to forge.
+
+## Runtime model verification
+
+The release binary also verifies runtime model artifacts before serving
+requests. `nihostt download` and `nihostt serve` download pinned model revisions
+and check SHA-256 for:
+
+- ReazonSpeech-k2-v2 encoder, decoder, joiner, and `tokens.txt`
+- Silero VAD ONNX
+- WeSpeaker ResNet34 ONNX when diarization support is built
+
+If a cached file does not match one of the expected hashes, nihostt removes it
+and downloads a fresh copy. This protects deployments from partial downloads,
+stale cache contents, and accidental model replacement.

@@ -25,11 +25,11 @@ cargo build --release
 | **Offline** | ✅ Works without internet | ❌ No | ❌ No | ❌ No |
 | **Latency** | ✅ ~200ms (local) | ~500–2000ms | ~500–2000ms | ~1000–3000ms |
 | **Cost** | ✅ Free forever | $0.024/min | $1.0/hour | $0.024/min |
-| **Japanese CER** | **2.04%**¹ | ~5–8% | ~4–7% | ~5–9% |
+| **Japanese CER** | **~1.1%**¹ | ~5–8% | ~4–7% | ~5–9% |
 
-¹ Clean speech subset (9 clips). Full benchmark (134 clips): 13.59% — see Benchmarks section below.
+¹ Clean speech subset (9 clips). Full local benchmark (309 clips): 8.04% — see Benchmarks section below.
 
-*Benchmark: 134 clips — Tatoeba (34, diverse native speech) + JSUT basic5000 (100, read speech). Character error rate. Clean subset: 2.04%. Full set: 13.59%. See [`tests/benchmark.rs`](tests/benchmark.rs).*
+*Benchmark: 309 clips — Tatoeba (9 clean native speech) + Tatoeba Extended (200 colloquial phrases) + JSUT basic5000 (100 read speech). Character error rate after whitespace/punctuation normalization. Clean subset: ~1.1%. Full set: 8.04%. See [`tests/benchmark.rs`](tests/benchmark.rs).*
 
 ## Features
 
@@ -38,7 +38,8 @@ cargo build --release
 - 📡 **SSE streaming** — Server-Sent Events for progressive file transcription
 - 🧠 **SOTA accuracy** — ReazonSpeech-k2-v2 (Zipformer RNN-T, 159M params)
 - ⚡ **INT8 quantization** — ~155 MB model, ~350 MB RAM on mobile
-- 🔒 **Privacy by default** — loopback-only bind, no telemetry
+- 🔒 **Privacy by default** — loopback-only bind, origin checks, no telemetry
+- 🛡️ **Production controls** — rate limiting, readiness, metrics, graceful drain
 - 📱 **Android FFI** — build `libnihostt.so` for on-device mobile STT
 - 🗣️ **Speaker diarization** — optional feature-gated speaker ID tracking
 
@@ -137,10 +138,10 @@ cargo test --test benchmark -- --ignored
 
 | Dataset | Clips | Type | CER | Notes |
 |---|---|---|---|---|
-| Tatoeba JA (original) | 9 | Clean native speech | **~1.2%** | See [`tests/fixtures/tatoeba/`](tests/fixtures/tatoeba/) |
-| Tatoeba JA (extended) | 425 | Colloquial phrases | ~14% | Kanji/kana variants (e.g. "まことに" vs "誠に") |
-| JSUT basic5000 (sample) | 100 | Read speech, single speaker | ~8.5% | See [`tests/fixtures/jsut/`](tests/fixtures/jsut/) |
-| **Combined** | **534** | **Real native speech** | **7.82%** | **Punctuation-normalized overall** |
+| Tatoeba JA (original) | 9 | Clean native speech | **~1.1%** | See [`tests/fixtures/tatoeba/`](tests/fixtures/tatoeba/) |
+| Tatoeba JA (extended) | 200 | Colloquial phrases | included in overall | Kanji/kana variants (e.g. "まことに" vs "誠に") |
+| JSUT basic5000 (sample) | 100 | Read speech, single speaker | included in overall | See [`tests/fixtures/jsut/`](tests/fixtures/jsut/) |
+| **Combined** | **309** | **Real native speech** | **8.04%** | **415/5160 chars, punctuation-normalized** |
 | Synthetic TTS | — | `say -v Kyoko` | 24.19% | Higher due to acoustic mismatch |
 
 The extended set includes challenging short utterances where the model sometimes outputs kana instead of kanji. JSUT covers longer read sentences with domain-specific vocabulary. Many "errors" are orthographic variants rather than pronunciation failures. CER is computed after stripping whitespace and punctuation for a fairer comparison. See `tests/benchmark.rs` for methodology.
@@ -195,6 +196,7 @@ Includes:
 |---|---|---|
 | `GET` | `/health` | Liveness check (always returns 200 if process is up) |
 | `GET` | `/ready` | Readiness check (200 when inference pool has capacity, 503 when saturated) |
+| `GET` | `/metrics` | Optional Prometheus metrics when `--metrics` is enabled |
 | `POST` | `/v1/transcribe` | Upload audio file, get JSON transcript with optional `confidence` |
 | `POST` | `/v1/transcribe/stream` | Upload audio file, get SSE stream |
 | `WS` | `/v1/ws` | Real-time streaming with partial/final |
@@ -248,6 +250,17 @@ The speaker embedding model (~26 MB, WeSpeaker ResNet34) is auto-downloaded on f
 ¹ Auto-downloaded with `nihostt download` when built with `--features diarization`.
 
 Base models are from [HuggingFace](https://huggingface.co/reazon-research/reazonspeech-k2-v2).
+Downloads are pinned to immutable model revisions and verified with SHA-256.
+If a cached model file fails verification, nihostt removes it and downloads a
+fresh copy before serving requests.
+
+## Production Defaults
+
+- Server binds `127.0.0.1` by default. Use `--bind-all --host 0.0.0.0` only behind Docker, a reverse proxy, or a trusted network boundary.
+- Browser cross-origin requests are denied unless the origin is loopback, listed with `--allow-origin`, or `--cors-allow-any` is set.
+- Per-IP rate limiting is on by default: `--rate-limit-per-minute 60`, `--rate-limit-burst 10`. Set the rate to `0` to disable it.
+- `/health`, `/ready`, and `/metrics` are exempt from rate limiting so probes keep working under load.
+- `--metrics` exposes Prometheus text metrics at `GET /metrics`.
 
 ## Contributing
 

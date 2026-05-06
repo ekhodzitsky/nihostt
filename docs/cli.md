@@ -32,8 +32,9 @@ nihostt serve [OPTIONS]
                             Env: NIHOSTT_WS_FRAME_MAX_BYTES.
   --body-limit-bytes <B>    Max REST body size [default: 52428800 = 50 MiB].
                             Env: NIHOSTT_BODY_LIMIT_BYTES.
-  --rate-limit-per-minute <N>  Per-IP rate limit (requests/min). 0 = off (default).
-                            Applies to /v1/* only; /health is exempt.
+  --rate-limit-per-minute <N>  Per-IP rate limit (requests/min). Default: 60.
+                            Set to 0 to disable. Applies to /v1/* only;
+                            /health, /ready, and /metrics are exempt.
                             Env: NIHOSTT_RATE_LIMIT_PER_MINUTE.
   --rate-limit-burst <N>    Token-bucket burst size [default: 10].
                             Env: NIHOSTT_RATE_LIMIT_BURST.

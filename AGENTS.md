@@ -45,7 +45,7 @@ run.
 - **Audio resampling**: rubato 0.16
 - **FFT**: rustfft 6
 - **VAD**: Silero VAD (ONNX)
-- **Rate limiting**: in-tree token-bucket (dashmap-backed)
+- **Rate limiting**: in-tree token-bucket (`Mutex<HashMap<...>>`)
 
 ### Execution providers (compile-time features)
 
@@ -107,16 +107,18 @@ Defined in `src/inference/mod.rs`:
 
 ## Model Files
 
-Downloaded to `~/.nihostt/models/` from `reazon-research/reazonspeech-k2-v2`:
+Downloaded to `~/.nihostt/models/` from pinned upstream revisions and verified
+with SHA-256 before use:
 
-| File | Size (FP32) | Purpose |
+| File | Size | Purpose |
 |---|---|---|
-| `encoder-epoch-99-avg-1.onnx` | 565 MB | Zipformer encoder (active) |
+| `encoder-epoch-99-avg-1.onnx` | ~155 MB INT8 or 565 MB FP32 | Zipformer encoder (active) |
 | `encoder-epoch-99-avg-1.fp32.onnx` | 565 MB | Original FP32 backup after quantization |
 | `decoder-epoch-99-avg-1.onnx` | 12 MB | LSTM decoder |
 | `joiner-epoch-99-avg-1.onnx` | 11 MB | RNN-T joiner |
 | `tokens.txt` | small | Character vocabulary |
 | `silero_vad.onnx` | ~1 MB | Voice activity detection |
+| `wespeaker_resnet34.onnx` | ~26 MB | Speaker embedding for diarization |
 
 ## Development Conventions
 
@@ -191,7 +193,19 @@ requires listening on all interfaces. The non-Docker default is `127.0.0.1`.
 
 | Env var | CLI flag | Default |
 |---|---|---|
+| `NIHOSTT_ALLOW_BIND_ANY` | `--bind-all` | false |
+| `NIHOSTT_IDLE_TIMEOUT_SECS` | `--idle-timeout-secs` | 300 |
+| `NIHOSTT_WS_FRAME_MAX_BYTES` | `--ws-frame-max-bytes` | 524288 |
+| `NIHOSTT_BODY_LIMIT_BYTES` | `--body-limit-bytes` | 52428800 |
+| `NIHOSTT_RATE_LIMIT_PER_MINUTE` | `--rate-limit-per-minute` | 60 |
+| `NIHOSTT_RATE_LIMIT_BURST` | `--rate-limit-burst` | 10 |
+| `NIHOSTT_MAX_SESSION_SECS` | `--max-session-secs` | 3600 |
+| `NIHOSTT_SHUTDOWN_DRAIN_SECS` | `--shutdown-drain-secs` | 10 |
+| `NIHOSTT_TRUST_PROXY` | `--trust-proxy` | false |
+| `NIHOSTT_METRICS` | `--metrics` | false |
 | `NIHOSTT_SKIP_QUANTIZE` | `--skip-quantize` | false |
 
 `--skip-quantize` skips the automatic INT8 download / quantization step in
 `serve` and `download`. The `quantize` subcommand always performs the step.
+`--allow-origin` is repeatable and intentionally has no env var; document every
+browser origin explicitly for production deployments.

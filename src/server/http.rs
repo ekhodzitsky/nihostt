@@ -2,8 +2,7 @@
 
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Multipart, State};
-use axum::http::Request;
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
@@ -13,6 +12,8 @@ use futures_util::{SinkExt, StreamExt};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant, timeout};
@@ -21,7 +22,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::inference::{Engine, ProcessResult};
 use crate::protocol::{ClientMessage, ServerMessage};
-use crate::server::ServerConfig;
+use crate::server::{OriginPolicy, ServerConfig};
+
+static TEMP_UPLOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Shared application state passed to all handlers.
 #[derive(Clone)]
@@ -30,6 +33,8 @@ pub struct AppState {
     pub limits: crate::server::RuntimeLimits,
     pub rate_limiter: Option<Arc<crate::server::rate_limit::RateLimiter>>,
     pub trust_proxy: bool,
+    pub origin_policy: OriginPolicy,
+    pub metrics_enabled: bool,
     pub shutdown: CancellationToken,
 }
 
@@ -54,6 +59,8 @@ pub async fn run_with_config(
         limits: config.limits.clone(),
         rate_limiter,
         trust_proxy: config.trust_proxy,
+        origin_policy: config.origin_policy,
+        metrics_enabled: config.metrics_enabled,
         shutdown: cancel.clone(),
     };
     let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
@@ -108,6 +115,11 @@ pub async fn run_on_random_port_with_shutdown(
         limits: limits.clone(),
         rate_limiter,
         trust_proxy: false,
+        origin_policy: OriginPolicy {
+            allow_any: false,
+            allowed_origins: Vec::new(),
+        },
+        metrics_enabled: false,
         shutdown: cancel.clone(),
     };
     let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
@@ -144,18 +156,79 @@ pub async fn run_on_random_port_with_shutdown(
 
 fn create_router(state: AppState) -> Router {
     let state = Arc::new(state);
-    Router::new()
+    let mut router = Router::new()
         .route("/health", get(health_handler))
         .route("/ready", get(ready_handler))
-        .route("/v1/transcribe", post(transcribe_handler))
-        .route("/v1/transcribe/stream", post(transcribe_stream_handler))
-        .route("/v1/ws", get(ws_handler))
+        .route(
+            "/v1/transcribe",
+            post(transcribe_handler).options(preflight_handler),
+        )
+        .route(
+            "/v1/transcribe/stream",
+            post(transcribe_stream_handler).options(preflight_handler),
+        )
+        .route("/v1/ws", get(ws_handler).options(preflight_handler));
+
+    if state.metrics_enabled {
+        router = router.route("/metrics", get(metrics_handler));
+    }
+
+    router
         .layer(DefaultBodyLimit::max(state.limits.body_limit_bytes))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            origin_layer,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             rate_limit_layer,
         ))
         .with_state(state)
+}
+
+async fn write_upload_to_temp_file(
+    prefix: &str,
+    bytes: &[u8],
+) -> std::io::Result<std::path::PathBuf> {
+    for _ in 0..16 {
+        let counter = TEMP_UPLOAD_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "{prefix}_{}_{}_{}.upload",
+            std::process::id(),
+            now,
+            counter
+        ));
+
+        let mut file = match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+
+        if let Err(e) = file.write_all(bytes).await {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err(e);
+        }
+        if let Err(e) = file.flush().await {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err(e);
+        }
+        return Ok(path);
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a unique upload temp path",
+    ))
 }
 
 async fn rate_limit_layer(
@@ -164,7 +237,11 @@ async fn rate_limit_layer(
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    if req.uri().path() == "/health" || req.uri().path() == "/ready" {
+    if req.method() == Method::OPTIONS
+        || req.uri().path() == "/health"
+        || req.uri().path() == "/ready"
+        || req.uri().path() == "/metrics"
+    {
         return next.run(req).await;
     }
 
@@ -198,6 +275,83 @@ async fn rate_limit_layer(
     next.run(req).await
 }
 
+async fn origin_layer(
+    State(state): State<Arc<AppState>>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let origin = match req.headers().get(header::ORIGIN) {
+        Some(value) => match value.to_str() {
+            Ok(origin) => Some(origin.to_string()),
+            Err(_) => {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({"code": "origin_forbidden"})),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+
+    let allowed_origin = match origin.as_deref() {
+        Some(origin) if origin_is_allowed(origin, &state.origin_policy) => {
+            allowed_origin_header(origin, &state.origin_policy)
+        }
+        Some(_) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"code": "origin_forbidden"})),
+            )
+                .into_response();
+        }
+        None => None,
+    };
+
+    if req.method() == Method::OPTIONS {
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        apply_cors_headers(response.headers_mut(), allowed_origin.as_ref());
+        return response;
+    }
+
+    let mut response = next.run(req).await;
+    apply_cors_headers(response.headers_mut(), allowed_origin.as_ref());
+    response
+}
+
+fn origin_is_allowed(origin: &str, policy: &OriginPolicy) -> bool {
+    policy.allow_any
+        || policy
+            .allowed_origins
+            .iter()
+            .any(|allowed| allowed == origin)
+}
+
+fn allowed_origin_header(origin: &str, policy: &OriginPolicy) -> Option<HeaderValue> {
+    if policy.allow_any {
+        Some(HeaderValue::from_static("*"))
+    } else {
+        HeaderValue::from_str(origin).ok()
+    }
+}
+
+fn apply_cors_headers(headers: &mut axum::http::HeaderMap, origin: Option<&HeaderValue>) {
+    let Some(origin) = origin else {
+        return;
+    };
+
+    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin.clone());
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET,POST,OPTIONS"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("content-type"),
+    );
+    headers.append(header::VARY, HeaderValue::from_static("origin"));
+}
+
 // ---------------------------------------------------------------------------
 // Health
 // ---------------------------------------------------------------------------
@@ -228,6 +382,33 @@ async fn ready_handler(State(state): State<Arc<AppState>>) -> Response {
         )
             .into_response()
     }
+}
+
+async fn preflight_handler() -> StatusCode {
+    StatusCode::NO_CONTENT
+}
+
+async fn metrics_handler(State(state): State<Arc<AppState>>) -> Response {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        render_metrics(state.engine.pool.is_ready()),
+    )
+        .into_response()
+}
+
+fn render_metrics(pool_ready: bool) -> String {
+    let pool_ready = u8::from(pool_ready);
+    format!(
+        "# HELP nihostt_up Whether the nihostt process is serving requests.\n\
+         # TYPE nihostt_up gauge\n\
+         nihostt_up 1\n\
+         # HELP nihostt_pool_ready Whether at least one inference session is available.\n\
+         # TYPE nihostt_pool_ready gauge\n\
+         nihostt_pool_ready {pool_ready}\n"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -263,11 +444,12 @@ async fn transcribe_handler(
     }
 
     // Write to a temporary file so symphonia can decode it.
-    let temp_path = std::env::temp_dir().join(format!("nihostt_upload_{}.wav", std::process::id()));
-    tokio::fs::write(&temp_path, &bytes).await.map_err(|e| {
-        tracing::error!("failed to write temp file: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR.into_response()
-    })?;
+    let temp_path = write_upload_to_temp_file("nihostt_upload", &bytes)
+        .await
+        .map_err(|e| {
+            tracing::error!("failed to write temp file: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        })?;
 
     let engine = state.engine.clone();
     let path_str = temp_path.to_string_lossy().to_string();
@@ -277,6 +459,7 @@ async fn transcribe_handler(
             Ok(Ok(g)) => g,
             Ok(Err(e)) => {
                 tracing::error!("pool checkout error: {e}");
+                let _ = tokio::fs::remove_file(&temp_path).await;
                 return Err((
                     StatusCode::SERVICE_UNAVAILABLE,
                     [("retry-after", "30")],
@@ -286,6 +469,7 @@ async fn transcribe_handler(
             }
             Err(_) => {
                 tracing::warn!("pool checkout timed out");
+                let _ = tokio::fs::remove_file(&temp_path).await;
                 return Err((
                     StatusCode::SERVICE_UNAVAILABLE,
                     [("retry-after", "30")],
@@ -295,16 +479,22 @@ async fn transcribe_handler(
             }
         };
 
-    let result = engine.transcribe_file(&path_str, &mut guard);
-    drop(guard);
+    let join_result =
+        tokio::task::spawn_blocking(move || engine.transcribe_file(&path_str, guard.session()))
+            .await;
 
     // Clean up temp file regardless of success or failure.
     let _ = tokio::fs::remove_file(&temp_path).await;
 
-    let result = result.map_err(|e| {
-        tracing::error!("transcription error: {e}");
-        StatusCode::UNPROCESSABLE_ENTITY.into_response()
-    })?;
+    let result = join_result
+        .map_err(|e| {
+            tracing::error!("transcription task join error: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        })?
+        .map_err(|e| {
+            tracing::error!("transcription error: {e}");
+            StatusCode::UNPROCESSABLE_ENTITY.into_response()
+        })?;
 
     let mut response = serde_json::json!({
         "text": result.text,
@@ -354,11 +544,12 @@ async fn transcribe_stream_handler(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let temp_path = std::env::temp_dir().join(format!("nihostt_stream_{}.wav", std::process::id()));
-    if let Err(e) = tokio::fs::write(&temp_path, &bytes).await {
-        tracing::error!("failed to write temp file: {e}");
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
+    let temp_path = write_upload_to_temp_file("nihostt_stream", &bytes)
+        .await
+        .map_err(|e| {
+            tracing::error!("failed to write temp file: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     // Decode audio (blocking I/O + decoding).
     let path_str = temp_path.to_string_lossy().to_string();
@@ -408,7 +599,7 @@ async fn transcribe_stream_handler(
     let temp_path_clone = temp_path.clone();
 
     tokio::spawn(async move {
-        let mut guard =
+        let guard =
             match tokio::time::timeout(Duration::from_secs(30), engine.pool.checkout()).await {
                 Ok(Ok(g)) => g,
                 Ok(Err(e)) => {
@@ -425,49 +616,53 @@ async fn transcribe_stream_handler(
                 }
             };
 
-        // 5-second sliding windows with 1-second overlap.
-        let chunk_samples = 5 * 16000;
-        let hop_samples = 4 * 16000;
-        let mut all_texts: Vec<String> = Vec::new();
+        let join_result = tokio::task::spawn_blocking(move || {
+            let mut guard = guard;
+            // 5-second sliding windows with 1-second overlap.
+            let chunk_samples = 5 * 16000;
+            let hop_samples = 4 * 16000;
+            let mut all_texts: Vec<String> = Vec::new();
 
-        for start in (0..samples_16k.len()).step_by(hop_samples) {
-            let end = (start + chunk_samples).min(samples_16k.len());
-            let chunk = &samples_16k[start..end];
-            if chunk.is_empty() {
-                break;
-            }
-
-            match engine.transcribe_samples(chunk, &mut guard) {
-                Ok(result) => {
-                    if !result.text.is_empty() {
-                        all_texts.push(result.text.clone());
-                        let event = SseEvent {
-                            text: result.text,
-                            final_: false,
-                        };
-                        if tx.send(Ok(event)).await.is_err() {
-                            // Receiver dropped (client disconnected).
-                            break;
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("chunk transcription error: {e}");
-                    let _ = tx.send(Err(format!("transcription: {e}"))).await;
+            for start in (0..samples_16k.len()).step_by(hop_samples) {
+                let end = (start + chunk_samples).min(samples_16k.len());
+                let chunk = &samples_16k[start..end];
+                if chunk.is_empty() {
                     break;
                 }
+
+                match engine.transcribe_samples(chunk, &mut guard) {
+                    Ok(result) => {
+                        if !result.text.is_empty() {
+                            all_texts.push(result.text.clone());
+                            let event = SseEvent {
+                                text: result.text,
+                                final_: false,
+                            };
+                            if tx.blocking_send(Ok(event)).is_err() {
+                                // Receiver dropped (client disconnected).
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("chunk transcription error: {e}");
+                        let _ = tx.blocking_send(Err(format!("transcription: {e}")));
+                        break;
+                    }
+                }
             }
-        }
 
-        drop(guard);
-
-        let final_text = all_texts.join(" ");
-        let _ = tx
-            .send(Ok(SseEvent {
+            let final_text = all_texts.join(" ");
+            let _ = tx.blocking_send(Ok(SseEvent {
                 text: final_text,
                 final_: true,
-            }))
-            .await;
+            }));
+        })
+        .await;
+
+        if let Err(e) = join_result {
+            tracing::error!("SSE transcription task join error: {e}");
+        }
 
         let _ = tokio::fs::remove_file(&temp_path_clone).await;
     });
@@ -773,4 +968,45 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
 
     // Graceful close: send Close frame before dropping the socket.
     let _ = socket.close().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn write_upload_to_temp_file_creates_unique_paths() {
+        let first = write_upload_to_temp_file("nihostt_test_upload", b"first")
+            .await
+            .expect("first temp upload write should succeed");
+        let second = write_upload_to_temp_file("nihostt_test_upload", b"second")
+            .await
+            .expect("second temp upload write should succeed");
+
+        assert_ne!(first, second, "concurrent uploads must not share a path");
+        assert_eq!(tokio::fs::read(&first).await.unwrap(), b"first");
+        assert_eq!(tokio::fs::read(&second).await.unwrap(), b"second");
+
+        let _ = tokio::fs::remove_file(first).await;
+        let _ = tokio::fs::remove_file(second).await;
+    }
+
+    #[test]
+    fn origin_policy_denies_unknown_origins_by_default() {
+        let policy = crate::server::OriginPolicy {
+            allow_any: false,
+            allowed_origins: vec!["https://app.example".to_string()],
+        };
+
+        assert!(origin_is_allowed("https://app.example", &policy));
+        assert!(!origin_is_allowed("https://evil.example", &policy));
+    }
+
+    #[test]
+    fn render_metrics_exports_pool_readiness() {
+        let body = render_metrics(true);
+
+        assert!(body.contains("nihostt_up 1"));
+        assert!(body.contains("nihostt_pool_ready 1"));
+    }
 }

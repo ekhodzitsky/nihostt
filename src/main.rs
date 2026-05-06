@@ -1,3 +1,4 @@
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use nihostt::server::{OriginPolicy, RuntimeLimits, ServerConfig};
 use nihostt::{inference, model, server};
@@ -212,7 +213,7 @@ async fn ensure_int8_encoder(model_dir: &str, skip: bool, force: bool) -> anyhow
     }
 
     // Attempt to download pre-quantized INT8 encoder from HF.
-    let int8_url = "https://huggingface.co/reazon-research/reazonspeech-k2-v2/resolve/main/encoder-epoch-99-avg-1.int8.onnx";
+    let int8_url = "https://huggingface.co/reazon-research/reazonspeech-k2-v2/resolve/a454b3fe1e63f4189ae3994248aeb3d31b6682f4/encoder-epoch-99-avg-1.int8.onnx";
     let client = reqwest::Client::new();
     let int8_temp = fp32_path.with_extension("int8.partial");
     tracing::info!("Attempting to download INT8 encoder from HuggingFace…");
@@ -225,6 +226,9 @@ async fn ensure_int8_encoder(model_dir: &str, skip: bool, force: bool) -> anyhow
             }
             file.flush().await?;
             drop(file);
+            model::verify_file_sha256(&int8_temp, model::ENCODER_INT8_SHA256)
+                .await
+                .with_context(|| "downloaded INT8 encoder failed SHA-256 verification")?;
             if fp32_path.exists() {
                 let backup = fp32_path.with_extension("fp32.onnx");
                 tokio::fs::rename(&fp32_path, &backup).await?;

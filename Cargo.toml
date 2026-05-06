@@ -54,17 +54,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
 anyhow = "1"
-thiserror = "1"
+thiserror = "2"
 
 # Cryptographic hashing for model verification
-sha2 = "0.11"
+sha2 = "0.10"
 hex = "0.4"
 
 # FFT for mel spectrogram
 rustfft = "6"
-
-# N-dimensional arrays for ONNX tensor manipulation
-ndarray = "0.16"
 
 # Speaker diarization (optional)
 polyvoice = { version = "0.4.3", features = ["onnx"], optional = true }
@@ -83,12 +80,6 @@ symphonia = { version = "0.5", features = ["aac", "isomp4", "mp3", "ogg", "flac"
 
 # Explicit pin for zero-copy byte buffers shared with symphonia
 bytes = "1"
-
-# Per-IP rate limiting (token bucket, optional — off by default)
-dashmap = "6"
-
-# Home directory detection for default model path
-dirs = "5"
 
 # ONNX protobuf types for quantization pipeline
 prost = "0.14"

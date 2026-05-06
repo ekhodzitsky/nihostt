@@ -65,24 +65,25 @@ paths:
                   reason:
                     type: string
                     example: inference pool saturated
-  /v1/models:
+  /metrics:
     get:
-      summary: List available models
-      operationId: listModels
+      summary: Prometheus metrics
+      operationId: prometheusMetrics
+      description: Available only when the server is started with `--metrics`.
       responses:
         '200':
-          description: Model information
+          description: Prometheus text exposition
           content:
-            application/json:
+            text/plain:
               schema:
-                type: object
-                properties:
-                  model:
-                    type: string
-                    example: reazonspeech-k2-v2
-                  language:
-                    type: string
-                    example: ja
+                type: string
+                example: |
+                  # HELP nihostt_up Whether the nihostt process is serving requests.
+                  # TYPE nihostt_up gauge
+                  nihostt_up 1
+                  # HELP nihostt_pool_ready Whether at least one inference session is available.
+                  # TYPE nihostt_pool_ready gauge
+                  nihostt_pool_ready 1
   /v1/transcribe:
     post:
       summary: Transcribe an audio file

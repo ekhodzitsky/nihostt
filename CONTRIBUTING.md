@@ -22,10 +22,12 @@ cargo run --release -- download
 cargo test
 
 # Run E2E tests (require model)
-cargo test --test e2e_rest --test e2e_ws -- --ignored --test-threads=1
+cargo test --test e2e_rest --test e2e_ws --test e2e_errors --test e2e_shutdown --test e2e_rate_limit -- --ignored --test-threads=1
 
-# Lint
-cargo clippy
+# Lint and supply-chain checks
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo deny check
 ```
 
 ## Architecture
@@ -45,7 +47,7 @@ src/
 
 1. **Fork & branch** — create a feature branch from `main`
 2. **Write tests** — every bug fix and feature needs tests
-3. **Run the full suite** — `cargo test && cargo clippy`
+3. **Run the full suite** — `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo deny check`
 4. **Update docs** — README, AGENTS.md, and inline docs if interfaces change
 5. **Open a PR** — describe what, why, and how you tested it
 
@@ -56,6 +58,7 @@ src/
 - `tracing` for logs (never `println!` in library code)
 - Constants live in `inference/mod.rs`
 - Feature-gate heavy deps behind Cargo features (`diarization`, `ffi`)
+- Keep model downloads pinned to immutable revisions and SHA-256 verified
 
 ## Areas Where Help is Welcome
 

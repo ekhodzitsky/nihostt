@@ -7,11 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Prometheus metrics endpoint** — `GET /metrics` is available when the server starts with `--metrics`, exposing `nihostt_up` and `nihostt_pool_ready`.
+- **Origin preflight handling** — REST, SSE, and WebSocket routes now respond to CORS preflight requests and reject unknown browser origins with `origin_forbidden`.
+
+### Changed
+
+- **Pinned model supply chain** — model downloads use immutable upstream revisions and SHA-256 verification for ReazonSpeech, Silero VAD, WeSpeaker, and the official INT8 encoder.
+- **Safer session lifecycle** — pooled inference sessions are returned synchronously on guard drop, including FFI streaming sessions, instead of relying on detached async cleanup.
+- **Blocking inference isolation** — REST and SSE inference work now runs on blocking threads so long transcriptions do not stall the async runtime.
+- **Dependency graph cleanup** — removed unused direct dependencies (`dashmap`, `dirs`, `ndarray`), aligned `sha2` / `thiserror`, and changed `cargo-deny` duplicate checks from warning-only to deny-by-default with a pinned exception list.
+
+### Fixed
+
+- **Multipart temp-file collisions** — uploads now use collision-resistant temp filenames with `create_new` and clean up partial files on failure.
+- **Cached model mismatch handling** — corrupt or unexpected cached model files are removed and redownloaded instead of being trusted.
+
 ## [0.1.2] - 2026-05-06
 
 ### Added
 
-- **Expanded benchmark** — 534 real native-speaker clips (Tatoeba 9 + Tatoeba Extended 425 + JSUT basic5000 100). Overall CER: **7.82%** (579/7407 chars, punctuation-normalized). See `tests/benchmark.rs`.
+- **Expanded benchmark** — 309 real native-speaker clips (Tatoeba 9 + Tatoeba Extended 200 + JSUT basic5000 100). Overall CER: **8.04%** (415/5160 chars, punctuation-normalized). See `tests/benchmark.rs`.
 - **Confidence scores** — `POST /v1/transcribe` now returns an optional `confidence` field (average token probability from greedy argmax). See `docs/api-versioning.md`.
 - **Readiness probe** — new `GET /ready` endpoint returns 200 when the inference pool has available sessions, 503 when saturated. Exempt from rate limiting like `/health`.
 - **API versioning policy** — documented in `docs/api-versioning.md` (additive-only, deprecation cycle, stability guarantees).
@@ -22,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Rate limiting on by default** — `--rate-limit-per-minute` now defaults to `60` (was `0`). Burst size increased to `20`.
+- **Rate limiting on by default** — `--rate-limit-per-minute` now defaults to `60` (was `0`). Burst size defaults to `10`.
 - **E2E tests on PRs** — removed `refs/heads/main` gate so e2e tests run on pull requests too.
 - **Production-hardened error handling** — replaced `unwrap()` / `expect()` in VAD state machine and WebSocket session creation with proper `Result` propagation. `StreamingSession::new` now returns `anyhow::Result`.
 - **OpenAPI spec** — updated with `/ready`, `confidence` field, and `429`/`503` response headers.

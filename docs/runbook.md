@@ -43,6 +43,9 @@ nihostt serve
 
 # With custom options
 nihostt serve --port 8080 --pool-size 2 --metrics
+
+# Public browser deployment behind a trusted proxy
+nihostt serve --bind-all --host 0.0.0.0 --allow-origin https://stt.example.com --trust-proxy --metrics
 ```
 
 ## Checking health
@@ -82,9 +85,12 @@ nihostt serve --metrics
 Scrape at `GET /metrics`:
 
 ```
-# HELP nihostt_http_requests_total Total HTTP requests
-# TYPE nihostt_http_requests_total counter
-nihostt_http_requests_total{path="/health",status="200"} 42
+# HELP nihostt_up Whether the nihostt process is serving requests.
+# TYPE nihostt_up gauge
+nihostt_up 1
+# HELP nihostt_pool_ready Whether at least one inference session is available.
+# TYPE nihostt_pool_ready gauge
+nihostt_pool_ready 1
 ```
 
 ## Common issues
@@ -112,6 +118,20 @@ NIHOSTT_ALLOW_BIND_ANY=1 nihostt serve --host 0.0.0.0
 ```
 
 Required for Docker and reverse-proxy deployments.
+
+### Browser requests get `origin_forbidden`
+
+**Symptom:** REST/SSE/WebSocket browser clients receive HTTP 403 with
+`{"code":"origin_forbidden"}`.
+
+**Fix:** Add the browser origin explicitly:
+
+```sh
+nihostt serve --allow-origin https://stt.example.com
+```
+
+Loopback origins are allowed automatically. Use `--cors-allow-any` only behind a
+trusted boundary.
 
 ### OOM / high memory usage
 
@@ -153,3 +173,8 @@ Model files are backward-compatible across patch releases. If a new model versio
    - `decoder-epoch-99-avg-1.onnx`
    - `joiner-epoch-99-avg-1.onnx`
    - `tokens.txt`
+   - `silero_vad.onnx`
+
+If a model file is corrupted or from an unexpected revision, nihostt removes it
+and downloads a pinned SHA-256 verified copy on the next `nihostt download` or
+`nihostt serve`.

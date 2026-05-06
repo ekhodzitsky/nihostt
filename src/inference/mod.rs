@@ -3,8 +3,8 @@ use anyhow::Context;
 use ort::session::Session;
 use ort::value::TensorRef;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tokio::sync::Semaphore;
+use std::sync::{Arc, Mutex};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 pub mod audio;
 pub mod decode;
@@ -67,7 +67,7 @@ pub struct PooledSession {
 /// Thread-safe pool of pre-loaded ONNX sessions.
 pub struct SessionPool {
     semaphore: Arc<Semaphore>,
-    sessions: Arc<tokio::sync::Mutex<Vec<PooledSession>>>,
+    sessions: Arc<Mutex<Vec<PooledSession>>>,
 }
 
 impl SessionPool {
@@ -80,20 +80,20 @@ impl SessionPool {
         }
         Ok(Self {
             semaphore: Arc::new(Semaphore::new(size)),
-            sessions: Arc::new(tokio::sync::Mutex::new(sessions)),
+            sessions: Arc::new(Mutex::new(sessions)),
         })
     }
 
     pub async fn checkout(&self) -> anyhow::Result<SessionGuard> {
         let _permit = self
             .semaphore
-            .acquire()
+            .clone()
+            .acquire_owned()
             .await
             .context("pool semaphore closed")?;
-        let mut sessions = self.sessions.lock().await;
-        let session = sessions.pop().ok_or_else(|| NihosttError::PoolSaturated)?;
+        let session = pop_session(&self.sessions)?;
         Ok(SessionGuard {
-            pool: self,
+            sessions: self.sessions.clone(),
             session: Some(session),
             _permit,
         })
@@ -105,30 +105,51 @@ impl SessionPool {
         self.semaphore.try_acquire().is_ok()
     }
 
-    /// Blocking checkout for use inside `spawn_blocking`.
+    /// Blocking checkout for use from FFI or inside `spawn_blocking`.
     pub fn checkout_blocking(&self) -> anyhow::Result<BlockingSessionGuard> {
-        let _permit = self
-            .semaphore
-            .clone()
-            .try_acquire_owned()
-            .context("pool semaphore closed")?;
-        let mut sessions = self.sessions.blocking_lock();
-        let session = sessions.pop().ok_or_else(|| NihosttError::PoolSaturated)?;
-        Ok(BlockingSessionGuard {
-            pool: self,
+        let _permit = match self.semaphore.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(TryAcquireError::NoPermits) => {
+                return Err(anyhow::Error::new(NihosttError::PoolSaturated));
+            }
+            Err(TryAcquireError::Closed) => anyhow::bail!("pool semaphore closed"),
+        };
+        let session = pop_session(&self.sessions)?;
+        Ok(SessionGuard {
+            sessions: self.sessions.clone(),
             session: Some(session),
             _permit,
         })
     }
 }
 
-pub struct SessionGuard<'a> {
-    pool: &'a SessionPool,
-    session: Option<PooledSession>,
-    _permit: tokio::sync::SemaphorePermit<'a>,
+fn pop_session(sessions: &Arc<Mutex<Vec<PooledSession>>>) -> anyhow::Result<PooledSession> {
+    let mut sessions = sessions
+        .lock()
+        .map_err(|_| anyhow::anyhow!("session pool mutex poisoned"))?;
+    sessions
+        .pop()
+        .ok_or_else(|| anyhow::Error::new(NihosttError::PoolSaturated))
 }
 
-impl<'a> std::ops::Deref for SessionGuard<'a> {
+fn return_session(sessions: &Arc<Mutex<Vec<PooledSession>>>, session: PooledSession) {
+    match sessions.lock() {
+        Ok(mut sessions) => sessions.push(session),
+        Err(poisoned) => poisoned.into_inner().push(session),
+    }
+}
+
+pub struct SessionGuard {
+    sessions: Arc<Mutex<Vec<PooledSession>>>,
+    session: Option<PooledSession>,
+    _permit: OwnedSemaphorePermit,
+}
+
+/// Blocking variant of [`SessionGuard`] for use from FFI or inside
+/// `spawn_blocking`.
+pub type BlockingSessionGuard = SessionGuard;
+
+impl std::ops::Deref for SessionGuard {
     type Target = PooledSession;
     fn deref(&self) -> &Self::Target {
         // Invariant: session is only taken in Drop, so it is always Some
@@ -139,7 +160,7 @@ impl<'a> std::ops::Deref for SessionGuard<'a> {
     }
 }
 
-impl<'a> std::ops::DerefMut for SessionGuard<'a> {
+impl std::ops::DerefMut for SessionGuard {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // Invariant: session is only taken in Drop, so it is always Some
         // while the guard is alive.
@@ -149,85 +170,16 @@ impl<'a> std::ops::DerefMut for SessionGuard<'a> {
     }
 }
 
-impl<'a> SessionGuard<'a> {
+impl SessionGuard {
     pub fn session(&mut self) -> &mut PooledSession {
         self
     }
 }
 
-impl<'a> Drop for SessionGuard<'a> {
+impl Drop for SessionGuard {
     fn drop(&mut self) {
         if let Some(session) = self.session.take() {
-            let pool = self.pool.sessions.clone();
-            tokio::spawn(async move {
-                pool.lock().await.push(session);
-            });
-        }
-    }
-}
-
-/// Blocking variant of [`SessionGuard`] for use inside `spawn_blocking`.
-pub struct BlockingSessionGuard {
-    pool: *const SessionPool,
-    session: Option<PooledSession>,
-    _permit: tokio::sync::OwnedSemaphorePermit,
-}
-
-// Safety: BlockingSessionGuard is only used inside a single thread (spawn_blocking)
-// and the pointer is only used to push back into the pool on Drop.
-unsafe impl Send for BlockingSessionGuard {}
-
-impl std::ops::Deref for BlockingSessionGuard {
-    type Target = PooledSession;
-    fn deref(&self) -> &Self::Target {
-        // Invariant: session is only taken in Drop or into_inner, so it is
-        // always Some while the guard is alive.
-        self.session
-            .as_ref()
-            .unwrap_or_else(|| unreachable!("session taken in Drop or into_inner only"))
-    }
-}
-
-impl std::ops::DerefMut for BlockingSessionGuard {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // Invariant: session is only taken in Drop or into_inner, so it is
-        // always Some while the guard is alive.
-        self.session
-            .as_mut()
-            .unwrap_or_else(|| unreachable!("session taken in Drop or into_inner only"))
-    }
-}
-
-impl BlockingSessionGuard {
-    /// Mutable reference to the pooled session.
-    pub fn session(&mut self) -> &mut PooledSession {
-        // Invariant: session is only taken in Drop or into_inner, so it is
-        // always Some while the guard is alive.
-        self.session
-            .as_mut()
-            .unwrap_or_else(|| unreachable!("session taken in Drop or into_inner only"))
-    }
-
-    /// Take ownership of the pooled session, consuming the guard without
-    /// returning the session to the pool.
-    pub fn into_inner(mut self) -> PooledSession {
-        // Invariant: session is always present because into_inner consumes self
-        // and is the only place that takes the session before Drop.
-        self.session
-            .take()
-            .unwrap_or_else(|| unreachable!("session present in into_inner"))
-    }
-}
-
-impl Drop for BlockingSessionGuard {
-    fn drop(&mut self) {
-        if let Some(session) = self.session.take() {
-            // Safety: pool is always valid (SessionPool lives as long as the Engine).
-            let pool = unsafe { &*self.pool };
-            let pool_arc = pool.sessions.clone();
-            tokio::spawn(async move {
-                pool_arc.lock().await.push(session);
-            });
+            return_session(&self.sessions, session);
         }
     }
 }

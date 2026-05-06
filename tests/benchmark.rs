@@ -36,7 +36,11 @@ fn main() {
     for (dir, label) in &datasets {
         let meta_path = dir.join("meta.txt");
         if !meta_path.exists() {
-            eprintln!("Skipping {}: meta.txt not found at {}", label, meta_path.display());
+            eprintln!(
+                "Skipping {}: meta.txt not found at {}",
+                label,
+                meta_path.display()
+            );
             continue;
         }
         let meta_content = std::fs::read_to_string(&meta_path)
@@ -135,10 +139,9 @@ fn main() {
 fn normalize(s: &str) -> String {
     use std::collections::HashSet;
     let punct: HashSet<char> = [
-        '.', ',', '!', '?', ';', ':', '-', '_', '/', '\\', '(', ')', '[', ']', '{', '}', '"', '\'', '`',
-        '。', '、', '！', '？', '，', '．', '；', '：', '・',
-        '「', '」', '『', '』', '（', '）', '［', '］', '｛', '｝',
-        '“', '”', '‘', '’', '—', '–', '…',
+        '.', ',', '!', '?', ';', ':', '-', '_', '/', '\\', '(', ')', '[', ']', '{', '}', '"', '\'',
+        '`', '。', '、', '！', '？', '，', '．', '；', '：', '・', '「', '」', '『', '』', '（',
+        '）', '［', '］', '｛', '｝', '“', '”', '‘', '’', '—', '–', '…',
     ]
     .iter()
     .copied()

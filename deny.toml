@@ -5,11 +5,13 @@ yanked = "deny"
 [licenses]
 version = 2
 confidence-threshold = 0.9
+unused-allowed-license = "allow"
 allow = [
     "MIT",
     "Apache-2.0",
     "BSD-3-Clause",
     "BSD-2-Clause",
+    "CDLA-Permissive-2.0",
     "Unicode-3.0",
     "ISC",
     "CC0-1.0",
@@ -20,8 +22,15 @@ allow = [
 ]
 
 [bans]
-multiple-versions = "warn"
+multiple-versions = "deny"
 wildcards = "deny"
+skip = [
+    { crate = "bitflags@1.3.2", reason = "symphonia 0.5.x still depends on bitflags 1.x while the TLS/runtime stack uses bitflags 2.x" },
+    { crate = "getrandom@0.4.2", reason = "tempfile and tungstenite currently depend on different getrandom major versions" },
+    { crate = "hashbrown@0.15.5", reason = "prost-build pulls petgraph/indexmap versions that have not converged on one hashbrown release" },
+    { crate = "r-efi@6.0.0", reason = "paired with the accepted getrandom 0.4.x duplicate on WASI targets" },
+    { crate = "wit-bindgen@0.51.0", reason = "WASI support crates in getrandom 0.3.x and 0.4.x use different wit-bindgen versions" },
+]
 
 [sources]
 unknown-git = "deny"

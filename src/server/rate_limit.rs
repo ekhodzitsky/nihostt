@@ -2,13 +2,13 @@
 //!
 //! Disabled by default; enable via `--rate-limit-per-minute N`.
 
-use dashmap::DashMap;
+use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::Mutex;
+use std::time::Instant;
 
 pub struct RateLimiter {
-    buckets: Arc<DashMap<IpAddr, TokenBucket>>,
+    buckets: Mutex<HashMap<IpAddr, TokenBucket>>,
     refill_per_minute: u32,
     burst: u32,
 }
@@ -21,7 +21,7 @@ struct TokenBucket {
 impl RateLimiter {
     pub fn new(refill_per_minute: u32, burst: u32) -> Self {
         Self {
-            buckets: Arc::new(DashMap::new()),
+            buckets: Mutex::new(HashMap::new()),
             refill_per_minute,
             burst,
         }
@@ -33,7 +33,11 @@ impl RateLimiter {
         }
 
         let now = Instant::now();
-        let mut entry = self.buckets.entry(ip).or_insert_with(|| TokenBucket {
+        let mut buckets = self
+            .buckets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = buckets.entry(ip).or_insert_with(|| TokenBucket {
             tokens: self.burst as f64,
             last_update: now,
         });
@@ -49,5 +53,30 @@ impl RateLimiter {
         } else {
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_refill_disables_rate_limit() {
+        let limiter = RateLimiter::new(0, 0);
+        let ip = "127.0.0.1".parse().expect("valid ip");
+
+        for _ in 0..10 {
+            assert!(limiter.check(ip));
+        }
+    }
+
+    #[test]
+    fn burst_is_consumed_per_ip() {
+        let limiter = RateLimiter::new(1, 2);
+        let ip = "127.0.0.1".parse().expect("valid ip");
+
+        assert!(limiter.check(ip));
+        assert!(limiter.check(ip));
+        assert!(!limiter.check(ip));
     }
 }

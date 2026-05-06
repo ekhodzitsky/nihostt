@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn test_vad_process_silence() {
-        let model_dir = dirs::home_dir().unwrap().join(".nihostt/models");
+        let model_dir = std::path::PathBuf::from(crate::model::default_model_dir());
         let mut vad = SileroVad::new(&model_dir.join("silero_vad.onnx")).unwrap();
         let silence = vec![0.0f32; 512];
         let prob = vad.process(&silence).unwrap();

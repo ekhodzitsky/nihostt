@@ -2,7 +2,7 @@
 
 <p align="center">
   <h1 align="center">nihostt</h1>
-  <p align="center"><strong>Локальное распознавание японской речи с CER 2.04%</strong></p>
+  <p align="center"><strong>Локальное распознавание японской речи с CER ~1.1% на чистой речи</strong></p>
   <p align="center">Сервер STT на базе ReazonSpeech-k2-v2 — без облака, без API-ключей, полная приватность</p>
   <p align="center">
     <a href="https://github.com/ekhodzitsky/nihostt/actions"><img src="https://github.com/ekhodzitsky/nihostt/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -32,9 +32,9 @@ cd nihostt && cargo build --release
 | **Оффлайн** | ✅ Работает без интернета | ❌ Нет | ❌ Нет | ❌ Нет |
 | **Задержка** | ✅ ~200 мс (локально) | ~500–2000 мс | ~500–2000 мс | ~1000–3000 мс |
 | **Стоимость** | ✅ Бесплатно навсегда | $0.024/мин | $1.0/час | $0.024/мин |
-| **CER (японский)** | **2.04%** | ~5–8% | ~4–7% | ~5–9% |
+| **CER (японский)** | **~1.1%** | ~5–8% | ~4–7% | ~5–9% |
 
-*Бенчмарк: 9 клипов носителей языка из Tatoeba, character error rate. См. [`tests/benchmark.rs`](tests/benchmark.rs).*
+*Бенчмарк: 309 клипов — Tatoeba (9 чистых клипов), Tatoeba Extended (200 разговорных фраз), JSUT basic5000 (100 прочитанных фраз). Общий CER: 8.04% после нормализации пробелов и пунктуации. См. [`tests/benchmark.rs`](tests/benchmark.rs).*
 
 ## Возможности
 
@@ -43,7 +43,8 @@ cd nihostt && cargo build --release
 - 📡 **SSE-стриминг** — Server-Sent Events для прогрессивной транскрипции файлов
 - 🧠 **SOTA точность** — ReazonSpeech-k2-v2 (Zipformer RNN-T, 159M параметров)
 - ⚡ **INT8 квантизация** — ~155 МБ модель, ~350 МБ RAM на мобильных
-- 🔒 **Приватность по умолчанию** — только loopback, никакой телеметрии
+- 🔒 **Приватность по умолчанию** — только loopback, проверка Origin, никакой телеметрии
+- 🛡️ **Production-контроли** — rate limit, readiness, metrics, graceful shutdown
 - 📱 **Android FFI** — сборка `libnihostt.so` для мобильного STT
 - 🗣️ **Диаризация спикеров** — опциональное определение спикеров
 
@@ -76,15 +77,25 @@ ws.onmessage = (event) => {
   if (msg.type === 'final')   console.log('final:  ', msg.text);
 };
 
-ws.onopen = () => {
-  navigator.mediaDevices.getUserMedia({ audio: true })
-    .then(stream => {
-      const recorder = new MediaRecorder(stream);
-      recorder.ondataavailable = e => {
-        e.data.arrayBuffer().then(buf => ws.send(buf));
-      };
-      recorder.start(500);
-    });
+ws.onopen = async () => {
+  // Сервер ждёт raw PCM16, mono. MediaRecorder обычно отдаёт WebM/Opus,
+  // поэтому для браузера используйте AudioContext/AudioWorklet.
+  const audioCtx = new AudioContext({ sampleRate: 16000 });
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const source = audioCtx.createMediaStreamSource(stream);
+  const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+
+  processor.onaudioprocess = (e) => {
+    const f32 = e.inputBuffer.getChannelData(0);
+    const pcm16 = new Int16Array(f32.length);
+    for (let i = 0; i < f32.length; i++) {
+      pcm16[i] = Math.max(-1, Math.min(1, f32[i])) * 0x7FFF;
+    }
+    ws.send(pcm16.buffer);
+  };
+
+  source.connect(processor);
+  processor.connect(audioCtx.destination);
 };
 ```
 
@@ -119,7 +130,10 @@ cargo test --test benchmark -- --ignored
 
 | Датасет | Тип | CER | Примечания |
 |---|---|---|---|
-| Tatoeba JA (9 клипов) | Реальная речь носителей | **2.04%** | См. [`tests/fixtures/tatoeba/`](tests/fixtures/tatoeba/) |
+| Tatoeba JA (9 клипов) | Чистая речь носителей | **~1.1%** | См. [`tests/fixtures/tatoeba/`](tests/fixtures/tatoeba/) |
+| Tatoeba Extended (200 клипов) | Короткие разговорные фразы | включён в общий CER | Часто встречаются варианты кандзи/каны |
+| JSUT basic5000 (100 клипов) | Прочитанная речь | включён в общий CER | Один диктор, длинные фразы |
+| **Итого** | **Реальная японская речь** | **8.04%** | 415 ошибок / 5160 символов |
 | Синтетический TTS | `say -v Kyoko` | 24.19% | Акустический мисматч |
 
 ## Установка
@@ -162,6 +176,8 @@ docker build --build-arg NIHOSTT_BAKE_MODEL=1 -t nihostt:baked .
 | Метод | Эндпоинт | Описание |
 |---|---|---|
 | `GET` | `/health` | Проверка работоспособности |
+| `GET` | `/ready` | Readiness: 200 при свободной inference-сессии, 503 при saturation |
+| `GET` | `/metrics` | Prometheus metrics, если сервер запущен с `--metrics` |
 | `POST` | `/v1/transcribe` | Загрузка аудио, JSON-результат |
 | `POST` | `/v1/transcribe/stream` | Загрузка аудио, SSE-стрим |
 | `WS` | `/v1/ws` | Реальное время: partial/final |
@@ -187,8 +203,18 @@ cargo ndk -t arm64-v8a -o ./android/app/src/main/jniLibs \
 | `decoder-epoch-99-avg-1.onnx` | ~4.4 МБ | LSTM decoder |
 | `joiner-epoch-99-avg-1.onnx` | ~2.6 МБ | RNN-T joiner |
 | `tokens.txt` | ~46 КБ | BPE словарь (5224 токена) |
+| `silero_vad.onnx` | ~1 МБ | Voice activity detection |
+| `wespeaker_resnet34.onnx` | ~26 МБ | Speaker embedding для диаризации |
 
-Авто-скачивание с [HuggingFace](https://huggingface.co/reazon-research/reazonspeech-k2-v2) при первом запуске.
+Авто-скачивание с [HuggingFace](https://huggingface.co/reazon-research/reazonspeech-k2-v2) при первом запуске. Артефакты модели закреплены на конкретных ревизиях и проверяются по SHA-256; повреждённый cache-файл удаляется и скачивается заново.
+
+## Production-поведение
+
+- По умолчанию сервер слушает только `127.0.0.1`. Для Docker/reverse proxy используйте `--bind-all --host 0.0.0.0`.
+- Browser Origin отклоняется, если он не loopback и не указан через `--allow-origin`. `--cors-allow-any` включает wildcard CORS.
+- Rate limit включён по умолчанию: `--rate-limit-per-minute 60`, `--rate-limit-burst 10`. Значение `0` отключает лимит.
+- `/health`, `/ready` и `/metrics` не rate-limit’ятся, чтобы probes работали под нагрузкой.
+- `--metrics` включает Prometheus endpoint `GET /metrics`.
 
 ## Участие в проекте
 

@@ -35,7 +35,7 @@ info:
     - `--idle-timeout-secs` (default 300) — WebSocket idle disconnect
     - `--max-session-secs` (default 3600) — wall-clock session cap (0 disables)
     - `--shutdown-drain-secs` (default 10) — max wait for in-flight sessions on SIGTERM
-    - `--rate-limit-per-minute` (default 0 = off) — per-IP token-bucket limit on `/v1/*` (HTTP 429 when exhausted; `/health` exempt)
+    - `--rate-limit-per-minute` (default 60, set 0 to disable) — per-IP token-bucket limit on `/v1/*` (HTTP 429 when exhausted; `/health`, `/ready`, and `/metrics` exempt)
     - Bind address: 127.0.0.1 by default; `--bind-all` / `NIHOSTT_ALLOW_BIND_ANY=1` required for non-loopback
     - Cross-origin requests: denied by default; use `--allow-origin URL` (repeatable) or `--cors-allow-any` to opt in
     - Pool saturation: WebSocket returns `error` message; REST returns 503

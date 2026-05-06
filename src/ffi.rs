@@ -15,7 +15,7 @@ use std::ffi::{CStr, CString, c_char};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::inference::{Engine, StreamingSession};
+use crate::inference::{BlockingSessionGuard, Engine, StreamingSession};
 
 /// Opaque handle to the inference engine.
 ///
@@ -30,7 +30,7 @@ pub struct NihosttEngine {
 /// Holds a checked-out session from the pool and a `StreamingSession`. The session
 /// is returned to the pool when `nihostt_stream_free` is called.
 pub struct NihosttStream {
-    session: crate::inference::PooledSession,
+    session: BlockingSessionGuard,
     streaming: StreamingSession,
     disposed: AtomicBool,
 }
@@ -231,10 +231,8 @@ pub unsafe extern "C" fn nihostt_stream_new(engine: *mut NihosttEngine) -> *mut 
             return ptr::null_mut();
         }
     };
-    let pooled = session.into_inner();
-
     let stream = NihosttStream {
-        session: pooled,
+        session,
         streaming,
         disposed: AtomicBool::new(false),
     };
@@ -354,19 +352,14 @@ pub unsafe extern "C" fn nihostt_stream_free(stream: *mut NihosttStream) {
         if unsafe { (*disposed).swap(true, Ordering::Relaxed) } {
             return;
         }
-        let stream = unsafe { Box::from_raw(stream) };
-        // `session` and `streaming` are dropped automatically when `stream` goes out of scope.
-        // The PooledSession is not automatically returned to the pool here because
-        // we took ownership of it in `stream_new`.  In a production FFI we would
-        // add a back-pointer to the engine/pool and check it back in; for now we
-        // simply drop the session (leaking one pool slot).
-        let _ = stream.session;
+        let _ = unsafe { Box::from_raw(stream) };
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
 
     #[test]
     fn test_stream_new_null_engine() {
@@ -405,5 +398,39 @@ mod tests {
         let bad = [0x80u8, 0x81, 0x82, 0];
         let engine = unsafe { nihostt_engine_new(bad.as_ptr() as *const c_char) };
         assert!(engine.is_null());
+    }
+
+    #[test]
+    #[ignore] // Requires model download.
+    fn test_stream_free_returns_session_to_pool() {
+        let model_dir = crate::model::default_model_dir();
+        let encoder = std::path::Path::new(&model_dir).join("encoder-epoch-99-avg-1.onnx");
+        assert!(
+            encoder.exists(),
+            "Model not found at {}. Run `cargo run -- download` first.",
+            model_dir
+        );
+
+        let model_dir = CString::new(model_dir).expect("model dir has no NUL");
+        let engine = unsafe { nihostt_engine_new_with_pool_size(model_dir.as_ptr(), 1) };
+        assert!(!engine.is_null(), "engine should load with pool_size=1");
+
+        let first = unsafe { nihostt_stream_new(engine) };
+        assert!(
+            !first.is_null(),
+            "first stream should checkout the only session"
+        );
+        unsafe { nihostt_stream_free(first) };
+
+        let second = unsafe { nihostt_stream_new(engine) };
+        assert!(
+            !second.is_null(),
+            "freeing a stream must return its session to the pool"
+        );
+
+        unsafe {
+            nihostt_stream_free(second);
+            nihostt_engine_free(engine);
+        }
     }
 }
