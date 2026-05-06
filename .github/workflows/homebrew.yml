@@ -5,9 +5,9 @@ name: Homebrew Formula update
 # the GitHub release and rewrites the sha256 lines in-place, then commits
 # back to main.
 
+# NOTE: Formula is now auto-updated by the release workflow (release.yml).
+# This workflow remains as a manual fallback only.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:

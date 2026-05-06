@@ -125,13 +125,13 @@ cargo test --test benchmark -- --ignored
 
 | Dataset | Clips | Type | CER | Notes |
 |---|---|---|---|---|
-| Tatoeba JA (original) | 9 | Clean native speech | **2.04%** | See [`tests/fixtures/tatoeba/`](tests/fixtures/tatoeba/) |
-| Tatoeba JA (extended) | 25 | Short colloquial phrases | ~21% | See [`tests/fixtures/tatoeba_extended/`](tests/fixtures/tatoeba_extended/) |
-| JSUT basic5000 (sample) | 100 | Read speech, single speaker | ~13% | See [`tests/fixtures/jsut/`](tests/fixtures/jsut/) |
-| **Combined** | **134** | **Real native speech** | **13.59%** | **Overall benchmark** |
+| Tatoeba JA (original) | 9 | Clean native speech | **~1.2%** | See [`tests/fixtures/tatoeba/`](tests/fixtures/tatoeba/) |
+| Tatoeba JA (extended) | 25 | Short colloquial phrases | ~17% | Kanji/kana variants (e.g. "まことに" vs "誠に") |
+| JSUT basic5000 (sample) | 100 | Read speech, single speaker | ~8.5% | See [`tests/fixtures/jsut/`](tests/fixtures/jsut/) |
+| **Combined** | **134** | **Real native speech** | **9.23%** | **Punctuation-normalized overall** |
 | Synthetic TTS | — | `say -v Kyoko` | 24.19% | Higher due to acoustic mismatch |
 
-The extended set includes challenging short utterances where the model sometimes outputs kana instead of kanji (e.g., "まことに" vs "誠に") or mismatches punctuation. JSUT covers longer read sentences with domain-specific vocabulary. Many "errors" are orthographic variants rather than pronunciation failures. See `tests/benchmark.rs` for methodology.
+The extended set includes challenging short utterances where the model sometimes outputs kana instead of kanji. JSUT covers longer read sentences with domain-specific vocabulary. Many "errors" are orthographic variants rather than pronunciation failures. CER is computed after stripping whitespace and punctuation for a fairer comparison. See `tests/benchmark.rs` for methodology.
 
 ## Installation
 

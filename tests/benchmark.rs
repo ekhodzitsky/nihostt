@@ -129,9 +129,23 @@ fn main() {
     });
 }
 
-/// Remove whitespace (ASCII + full-width) so comparison is character-based.
+/// Normalize text for fair CER comparison:
+/// - Strip whitespace
+/// - Strip punctuation (ASCII + Japanese full-width + brackets/quotes)
 fn normalize(s: &str) -> String {
-    s.chars().filter(|c| !c.is_whitespace()).collect()
+    use std::collections::HashSet;
+    let punct: HashSet<char> = [
+        '.', ',', '!', '?', ';', ':', '-', '_', '/', '\\', '(', ')', '[', ']', '{', '}', '"', '\'', '`',
+        '。', '、', '！', '？', '，', '．', '；', '：', '・',
+        '「', '」', '『', '』', '（', '）', '［', '］', '｛', '｝',
+        '“', '”', '‘', '’', '—', '–', '…',
+    ]
+    .iter()
+    .copied()
+    .collect();
+    s.chars()
+        .filter(|c| !c.is_whitespace() && !punct.contains(c))
+        .collect()
 }
 
 /// Levenshtein distance computed on Unicode scalar values (characters).
