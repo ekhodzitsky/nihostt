@@ -316,8 +316,8 @@ jobs:
 
   homebrew:
     name: Update Homebrew Formula
-    needs: [release]
-    if: always() && needs.release.result == 'success'
+    needs: [publish]
+    if: always() && needs.publish.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
