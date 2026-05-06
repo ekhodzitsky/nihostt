@@ -7,6 +7,14 @@ license = "MIT"
 repository = "https://github.com/ekhodzitsky/nihostt"
 keywords = ["stt", "speech-recognition", "onnx", "japanese", "privacy"]
 categories = ["multimedia::audio", "command-line-utilities"]
+exclude = [
+    "tests/fixtures/**/*",
+    "docs/**/*",
+    "Formula/**/*",
+    "k8s/**/*",
+    ".github/**/*",
+    "ffi/android/**/*",
+]
 
 [lib]
 crate-type = ["rlib", "cdylib"]
