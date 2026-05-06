@@ -7,6 +7,8 @@
 
 > **Local Japanese speech-to-text server.** On-device, real-time, privacy-first — powered by ReazonSpeech-k2-v2 via ONNX Runtime. No cloud APIs, no API keys, no data leaves your machine.
 
+![Demo](docs/nihostt-demo.gif)
+
 ```bash
 # Install from source & run
 git clone https://github.com/ekhodzitsky/nihostt.git
