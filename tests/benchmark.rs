@@ -1,7 +1,7 @@
 //! WER benchmark for nihostt on real Japanese speech clips.
 //!
 //! Uses Tatoeba Japanese audio recordings (native speaker voice samples)
-//! stored in `tests/fixtures/tatoeba/`.
+//! stored in `tests/fixtures/tatoeba/` and `tests/fixtures/tatoeba_extended/`.
 //! For Japanese, "word" = character, so this computes character error rate (CER).
 
 use std::path::PathBuf;
@@ -21,30 +21,59 @@ fn main() {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let pool = engine.pool.as_ref();
 
-    let fixtures_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let fixtures_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
-        .join("fixtures")
-        .join("tatoeba");
+        .join("fixtures");
 
-    // Load clips metadata from Tatoeba
-    let meta_path = fixtures_dir.join("meta.txt");
-    let meta_content = std::fs::read_to_string(&meta_path)
-        .expect("failed to read tatoeba meta.txt; run the download script first");
+    let datasets = vec![
+        (fixtures_root.join("tatoeba"), "Tatoeba"),
+        (fixtures_root.join("tatoeba_extended"), "Tatoeba Extended"),
+    ];
 
-    let mut clips = Vec::new();
-    for line in meta_content.lines() {
-        let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() >= 2 {
-            let wav_file = parts[0].replace(".mp3", ".wav");
-            let reference = parts[1].to_string();
-            clips.push((wav_file, reference));
+    let mut all_clips: Vec<(PathBuf, String, String)> = Vec::new();
+
+    for (dir, label) in &datasets {
+        let meta_path = dir.join("meta.txt");
+        if !meta_path.exists() {
+            eprintln!("Skipping {}: meta.txt not found at {}", label, meta_path.display());
+            continue;
+        }
+        let meta_content = std::fs::read_to_string(&meta_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", meta_path.display(), e));
+
+        for line in meta_content.lines() {
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts.len() >= 2 {
+                let file_name = parts[0].to_string();
+                let reference = parts[1].to_string();
+                // Try exact filename first, then .wav fallback for legacy Tatoeba
+                let exact = dir.join(&file_name);
+                let wav = dir.join(file_name.replace(".mp3", ".wav"));
+                let path = if exact.exists() {
+                    exact
+                } else if wav.exists() {
+                    wav
+                } else {
+                    eprintln!(
+                        "Skip missing file in {}: {} (tried {} and {})",
+                        label,
+                        file_name,
+                        exact.display(),
+                        wav.display()
+                    );
+                    continue;
+                };
+                all_clips.push((path, reference, label.to_string()));
+            }
         }
     }
 
     assert!(
-        !clips.is_empty(),
-        "No Tatoeba clips found. Download them first: see tests/fixtures/tatoeba/"
+        !all_clips.is_empty(),
+        "No benchmark clips found. Download them first: see tests/fixtures/"
     );
+
+    println!("Benchmarking on {} clips...\n", all_clips.len());
 
     rt.block_on(async {
         let mut session = pool.checkout().await.expect("pool checkout failed");
@@ -52,12 +81,7 @@ fn main() {
         let mut total_ref_chars = 0_usize;
         let mut total_errors = 0_usize;
 
-        for (file, reference) in &clips {
-            let path = fixtures_dir.join(file);
-            if !path.exists() {
-                eprintln!("Skip missing file: {}", path.display());
-                continue;
-            }
+        for (path, reference, label) in &all_clips {
             let result = engine
                 .transcribe_file(path.to_str().unwrap(), &mut session)
                 .expect("transcription failed");
@@ -74,7 +98,8 @@ fn main() {
             };
 
             println!(
-                "{file}: ref=\"{ref_norm}\" hyp=\"{hyp_norm}\" errors={errors} len={ref_len} CER={:.2}%",
+                "[{label}] {}: ref=\"{ref_norm}\" hyp=\"{hyp_norm}\" errors={errors} len={ref_len} CER={:.2}%",
+                path.file_name().unwrap().to_string_lossy(),
                 cer * 100.0
             );
 
@@ -90,7 +115,8 @@ fn main() {
 
         println!("\n=== BENCHMARK RESULT ===");
         println!(
-            "Overall CER = {:.2}% ({}/{} chars)",
+            "Clips: {} | Overall CER = {:.2}% ({}/{} chars)",
+            all_clips.len(),
             overall_cer * 100.0,
             total_errors,
             total_ref_chars

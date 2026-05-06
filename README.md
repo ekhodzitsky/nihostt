@@ -23,9 +23,11 @@ cargo build --release
 | **Offline** | ✅ Works without internet | ❌ No | ❌ No | ❌ No |
 | **Latency** | ✅ ~200ms (local) | ~500–2000ms | ~500–2000ms | ~1000–3000ms |
 | **Cost** | ✅ Free forever | $0.024/min | $1.0/hour | $0.024/min |
-| **Japanese CER** | **2.04%** | ~5–8% | ~4–7% | ~5–9% |
+| **Japanese CER** | **2.04%**¹ | ~5–8% | ~4–7% | ~5–9% |
 
-*Benchmark: 9 native-speaker clips from Tatoeba, character error rate. See [`tests/benchmark.rs`](tests/benchmark.rs).*
+¹ Clean speech subset (9 clips). Full benchmark (34 clips): 12.67% — see Benchmarks section below.
+
+*Benchmark: 34 native-speaker clips from Tatoeba (9 clean + 25 short colloquial phrases), character error rate. Clean subset: 2.04%. Full set: 12.67%. See [`tests/benchmark.rs`](tests/benchmark.rs).*
 
 ## Features
 
@@ -119,10 +121,14 @@ Run locally on Apple M1 Pro:
 cargo test --test benchmark -- --ignored
 ```
 
-| Dataset | Type | CER | Notes |
-|---|---|---|---|
-| Tatoeba JA (9 clips) | Real native speech | **2.04%** | See [`tests/fixtures/tatoeba/`](tests/fixtures/tatoeba/) |
-| Synthetic TTS | `say -v Kyoko` | 24.19% | Higher due to acoustic mismatch |
+| Dataset | Clips | Type | CER | Notes |
+|---|---|---|---|---|
+| Tatoeba JA (original) | 9 | Clean native speech | **2.04%** | See [`tests/fixtures/tatoeba/`](tests/fixtures/tatoeba/) |
+| Tatoeba JA (extended) | 25 | Short colloquial phrases | ~21% | See [`tests/fixtures/tatoeba_extended/`](tests/fixtures/tatoeba_extended/) |
+| **Combined** | **34** | **Real native speech** | **12.67%** | **Overall benchmark** |
+| Synthetic TTS | — | `say -v Kyoko` | 24.19% | Higher due to acoustic mismatch |
+
+The extended set includes challenging short utterances where the model sometimes outputs kana instead of kanji (e.g., "まことに" vs "誠に") or mismatches punctuation. These are orthographic differences rather than pronunciation errors. See `tests/benchmark.rs` for methodology.
 
 ## Installation
 
