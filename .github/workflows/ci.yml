@@ -19,7 +19,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      # Keep the generic unit lane model-free; benchmark.yml runs the model-backed benchmark target.
+      - run: cargo test --lib --bin nihostt
 
   build-features:
     runs-on: ubuntu-latest
