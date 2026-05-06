@@ -13,7 +13,7 @@ jobs:
   soak:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@stable
@@ -21,7 +21,7 @@ jobs:
 
       - name: Cache model
         id: cache-model
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.nihostt/models
           key: nihostt-model-${{ hashFiles('src/model/mod.rs') }}
