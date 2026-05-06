@@ -93,6 +93,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires downloaded Silero VAD model in the local model cache"]
     fn test_vad_process_silence() {
         let model_dir = std::path::PathBuf::from(crate::model::default_model_dir());
         let mut vad = SileroVad::new(&model_dir.join("silero_vad.onnx")).unwrap();
